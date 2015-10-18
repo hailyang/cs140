@@ -17,10 +17,11 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-
+void add_args_to_stack(void **esp, char *save_ptr, char *file_exec, uint32_t potential_len);
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -37,7 +38,7 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-
+  
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
@@ -59,13 +60,64 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+
+  char *save_ptr, *token;
+  uint32_t potential_len = strlen(file_name) + 1;
+//  char *file_exec = strtok_r(file_name, " ", &save_ptr);
+  token = strtok_r(file_name, " ", &save_ptr);
+  //TODO
+  success = load (token, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+//  palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
+  else {
+  char **args = (char **) malloc(potential_len * sizeof(char));
+  uint32_t argc = 0;
+  args[argc++] = token;
+  
+  uint32_t stack_args_len = strlen(token) + 1;
 
+  for(token = strtok_r(NULL, " ", &save_ptr); token !=NULL; token = strtok_r(NULL, " ", &save_ptr)) {
+        args[argc++] = token;
+        // keep track of length of argv[i] on stack
+        stack_args_len += strlen(token) + 1;
+  }
+
+  int i;
+  // list of addresses of each argument
+  int **token_addr = (int **)malloc(argc * sizeof(int*));
+  int token_len;
+  for (i = argc - 1; i>=0; i--) {
+        token_len = strlen(args[i]) + 1;
+        if_.esp -= token_len;
+        memcpy(if_.esp, args[i], token_len);
+        token_addr[i] = if_.esp;
+  }
+
+  int align = stack_args_len % 4;
+  if (align != 0) {
+        if_.esp = if_.esp - (4-align);
+  }
+  if_.esp -= 4;
+  *(int *) if_.esp = 0;
+
+  for (i = argc - 1; i>=0; i--) {
+        if_.esp -= 4;
+        *(void **)if_.esp = token_addr[i];
+  }
+
+  if_.esp -= 4;
+  *(int *) if_.esp = argc;
+  if_.esp -= 4;
+  *(int *) if_.esp = 0;
+
+  free (token_addr);
+  free (args);
+  }
+palloc_free_page (file_name);
+  //add_args_to_stack(&if_.esp, save_ptr, file_exec, potential_len);
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -88,6 +140,8 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  while (true ) {
+}
   return -1;
 }
 
@@ -424,6 +478,56 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   return true;
 }
 
+void
+add_args_to_stack(void **esp, char *save_ptr, char *file_exec, uint32_t potential_len) 
+{
+  char *token;
+  
+  char **args = (char **) malloc(potential_len * sizeof(char));
+  uint32_t argc = 0;
+  args[argc++] = file_exec;
+
+  uint32_t stack_args_len = strlen(file_exec) + 1;
+
+  token = strtok_r(NULL, " ", &save_ptr);
+  while(token != NULL) {
+	args[argc++] = token;
+	// keep track of length of argv[i] on stack
+	stack_args_len += strlen(token) + 1;
+	token = strtok_r(NULL, " ", &save_ptr);
+  }
+
+  int i;
+  // list of addresses of each argument
+  int **token_addr = (int **)malloc(argc * sizeof(int*));
+  int token_len;
+  for (i = argc - 1; i>=0; i--) {
+	token_len = strlen(args[i]) + 1;
+	esp -= token_len;
+	memcpy(esp, args[i], token_len);
+	token_addr[i] = esp;
+  }
+  
+  int align = stack_args_len % 4;
+  if (align != 0) {
+	esp = esp - (4-align); 
+  }
+  esp -= 4;
+  *(int *) esp = 0;
+  
+  for (i = argc - 1; i>=0; i--) {
+    	esp -= 4;
+	*(void **)esp = token_addr[i];
+  }
+
+  esp -= 4;
+  *(int *) esp = argc;
+  esp -= 4;
+  *(int *) esp = 0;
+
+  free (token_addr);
+  free (args);
+}
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
@@ -436,8 +540,12 @@ setup_stack (void **esp)
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
+
+      if (success) {
+	*esp = pg_round_down(esp);        
+	*esp = PHYS_BASE;
+   	
+      }
       else
         palloc_free_page (kpage);
     }
