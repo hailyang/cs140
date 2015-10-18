@@ -95,19 +95,24 @@ start_process (void *file_name_)
         memcpy(if_.esp, args[i], token_len);
         token_addr[i] = if_.esp;
   }
-
+  // word align
   int align = stack_args_len % 4;
   if (align != 0) {
         if_.esp = if_.esp - (4-align);
   }
+
+  // sentinel
   if_.esp -= 4;
   *(int *) if_.esp = 0;
-
+  // put addresses of argv[i] on stack
   for (i = argc - 1; i>=0; i--) {
         if_.esp -= 4;
         *(void **)if_.esp = token_addr[i];
   }
-
+  // pointer from argv to argv[0]
+  if_.esp -= 4;
+  *(char **)if_.esp = if_.esp + 4;
+  // put args count
   if_.esp -= 4;
   *(int *) if_.esp = argc;
   if_.esp -= 4;
@@ -115,9 +120,10 @@ start_process (void *file_name_)
 
   free (token_addr);
   free (args);
+
+  hex_dump(0, if_.esp, (int) ((size_t) PHYS_BASE - (size_t) if_.esp), true);
   }
 palloc_free_page (file_name);
-  //add_args_to_stack(&if_.esp, save_ptr, file_exec, potential_len);
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
