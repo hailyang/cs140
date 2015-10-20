@@ -21,7 +21,6 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-void add_args_to_stack(void **esp, char *save_ptr, char *file_exec, uint32_t potential_len);
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -92,36 +91,42 @@ start_process (void *file_name_)
   for (i = argc - 1; i>=0; i--) {
         token_len = strlen(args[i]) + 1;
         if_.esp -= token_len;
-        memcpy(if_.esp, args[i], token_len);
+        strlcpy(if_.esp, args[i], token_len);
         token_addr[i] = if_.esp;
   }
+  hex_dump(if_.esp, if_.esp, 64, true);
+
   // word align
   int align = stack_args_len % 4;
   if (align != 0) {
         if_.esp = if_.esp - (4-align);
   }
-
+hex_dump(if_.esp, if_.esp, 64, true);
   // sentinel
   if_.esp -= 4;
   *(int *) if_.esp = 0;
+hex_dump(if_.esp, if_.esp, 64, true);
   // put addresses of argv[i] on stack
   for (i = argc - 1; i>=0; i--) {
         if_.esp -= 4;
+//	strlcpy(if_.esp, 
         *(void **)if_.esp = token_addr[i];
   }
+hex_dump(if_.esp, if_.esp, 64, true);
   // pointer from argv to argv[0]
   if_.esp -= 4;
   *(char **)if_.esp = if_.esp + 4;
+hex_dump(if_.esp, if_.esp, 64, true);
   // put args count
   if_.esp -= 4;
   *(int *) if_.esp = argc;
   if_.esp -= 4;
   *(int *) if_.esp = 0;
-
+hex_dump(if_.esp, if_.esp, 64, true);
   free (token_addr);
   free (args);
 
-  hex_dump(0, if_.esp, (int) ((size_t) PHYS_BASE - (size_t) if_.esp), true);
+  hex_dump(if_.esp, if_.esp, 64, true);
   }
 palloc_free_page (file_name);
   /* Start the user process by simulating a return from an
@@ -484,56 +489,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   return true;
 }
 
-void
-add_args_to_stack(void **esp, char *save_ptr, char *file_exec, uint32_t potential_len) 
-{
-  char *token;
-  
-  char **args = (char **) malloc(potential_len * sizeof(char));
-  uint32_t argc = 0;
-  args[argc++] = file_exec;
-
-  uint32_t stack_args_len = strlen(file_exec) + 1;
-
-  token = strtok_r(NULL, " ", &save_ptr);
-  while(token != NULL) {
-	args[argc++] = token;
-	// keep track of length of argv[i] on stack
-	stack_args_len += strlen(token) + 1;
-	token = strtok_r(NULL, " ", &save_ptr);
-  }
-
-  int i;
-  // list of addresses of each argument
-  int **token_addr = (int **)malloc(argc * sizeof(int*));
-  int token_len;
-  for (i = argc - 1; i>=0; i--) {
-	token_len = strlen(args[i]) + 1;
-	esp -= token_len;
-	memcpy(esp, args[i], token_len);
-	token_addr[i] = esp;
-  }
-  
-  int align = stack_args_len % 4;
-  if (align != 0) {
-	esp = esp - (4-align); 
-  }
-  esp -= 4;
-  *(int *) esp = 0;
-  
-  for (i = argc - 1; i>=0; i--) {
-    	esp -= 4;
-	*(void **)esp = token_addr[i];
-  }
-
-  esp -= 4;
-  *(int *) esp = argc;
-  esp -= 4;
-  *(int *) esp = 0;
-
-  free (token_addr);
-  free (args);
-}
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
@@ -548,7 +503,6 @@ setup_stack (void **esp)
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
 
       if (success) {
-	*esp = pg_round_down(esp);        
 	*esp = PHYS_BASE;
    	
       }
