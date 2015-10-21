@@ -3,6 +3,7 @@
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include <user/syscall.h>
 
 #define sys_arg(TYPE, INDEX) (*(TYPE *)(f->esp +INDEX))
 
@@ -10,7 +11,6 @@ static void syscall_handler (struct intr_frame *);
 
 static void sys_halt (void);
 static void sys_exit (int status);
-/*
 static pid_t sys_exec (const char *cmd_line);
 static int sys_wait (pid_t pid);
 static bool sys_create (const char *file_name, unsigned initial_size);
@@ -22,7 +22,6 @@ static int sys_write (int fd, const void *buffer, unsigned size);
 static void sys_seek (int fd, unsigned position);
 static unsigned sys_tell (int fd);
 static void sys_close (int fd);
-*/
 void
 syscall_init (void) 
 {
@@ -91,4 +90,74 @@ sys_halt(void)
 }
 
 static void 
-sys_exit(int status) {}
+sys_exit(int status) 
+{
+}
+
+static pid_t
+sys_exec (const char *cmd_line)
+{
+	printf ("sys_exec: cmd_line = %s\n", cmd_line);
+}
+
+static int
+sys_wait (pid_t pid)
+{
+	printf ("sys_wait: pid = %d\n", (unsigned int) pid);
+}
+
+static bool
+sys_create (const char *file, unsigned initial_size)
+{
+	printf ("sys_create: file = %s, initial_size = %d\n", file, initial_size);
+}
+
+static bool
+sys_remove (const char *file)
+{
+	printf ("sys_remove: file = %s\n", file);
+}
+
+static int
+sys_open (const char *file)
+{
+	printf ("sys_open: file = %s\n", file);
+}
+
+static int
+sys_filesize (int fd)
+{
+	printf ("sys_filesize: fd = %d\n", fd);
+}
+
+static int
+sys_read (int fd, void *buffer, unsigned size)
+{
+	printf ("sys_read: fd = %d, buffer = 0x%.8x, size = %d\n", fd, (unsigned) buffer, size);
+}
+
+static int
+sys_write (int fd, const void *buffer, unsigned size)
+{
+	printf ("sys_write: fd = %d, buffer = 0x%.8x, size = %d\n", fd, (unsigned) buffer, size);
+}
+
+static void
+sys_seek (int fd, unsigned position)
+{
+	printf ("sys_seek: fd = %d, position = %d\n", fd, position);
+}
+
+static unsigned
+sys_tell (int fd)
+{
+	printf ("sys_tell: fd = %d\n", fd);
+}
+
+static void
+sys_close (int fd)
+{
+	printf ("sys_close: fd = %d\n", fd);
+}
+
+
