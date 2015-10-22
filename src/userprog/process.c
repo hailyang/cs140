@@ -285,6 +285,9 @@ process_exit (void)
         free (cur->exec_name);
     }
 
+  enum intr_level old_level;
+  old_level = intr_disable();
+
   if (cur->parent != NULL && cur->child_process_elem != NULL)
     {
       cur->child_process_elem->thread = NULL;
@@ -300,6 +303,7 @@ process_exit (void)
 	  cp->thread->parent = NULL;
 	free(cp);
     }
+  intr_set_level(old_level);
 }
 
 /* Sets up the CPU for running user code in the current

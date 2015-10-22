@@ -27,7 +27,7 @@ static unsigned sys_tell (int fd);
 static void sys_close (int fd);
 static bool buffer_read(uint8_t *dst, uint8_t *src, int size);
 static bool buffer_write(uint8_t *dst, uint8_t *src, int size);
-
+static void  cmd_validator(const char *str, int max_len);
 static bool args_validator(struct intr_frame *f, int nr);
 
 /* Reads a byte at user virtual address UADDR.
@@ -110,6 +110,25 @@ args_validator(struct intr_frame *f, int nr)
         }
   }
 }
+
+static void
+cmd_validator (const char *str, int max_len)
+{
+	int i;
+	int result;
+	for (i = 0; i < max_len; str++)
+		{
+			if (str >= PHYS_BASE)
+				thread_exit ();
+			result = get_user (str);
+			if (result == -1)
+				thread_exit ();
+			if (result == '\0')
+				return;
+		}
+	thread_exit ();
+}
+
 
 void
 syscall_init (void) 
@@ -210,13 +229,15 @@ sys_exit(int status)
 static pid_t
 sys_exec (const char *cmd_line)
 {
-	printf ("sys_exec: cmd_line = %s\n", cmd_line);
+	cmd_validator(cmd_line, PGSIZE);
+	tid_t t = process_execute(cmd_line);
+	return t;
 }
 
 static int
 sys_wait (pid_t pid)
 {
-	printf ("sys_wait: pid = %ud\n", (unsigned) pid);
+	return process_wait((tid_t) pid);
 }
 
 static bool
