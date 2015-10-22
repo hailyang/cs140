@@ -9,7 +9,7 @@
 #include "threads/intr-stubs.h"
 #include "threads/palloc.h"
 #include "threads/switch.h"
-#include "threads/synch.h"
+//#include "threads/synch.h"
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
@@ -182,6 +182,7 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+  t->parent = thread_current();
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -462,7 +463,15 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+#ifdef USERPROG
   t->magic = THREAD_MAGIC;
+  t->parent = NULL;
+  t->child_process_elem = NULL;
+  t->exec_name = NULL;
+  t->process_status = -1;
+  sema_init (&t->create_sema, 0);
+  list_init (&t->children);
+#endif  
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

@@ -18,6 +18,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -30,6 +31,7 @@ process_execute (const char *file_name)
 {
   char *fn_copy;
   tid_t tid;
+  enum intr_level old_level;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -37,11 +39,34 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-  
+  struct thread *cur = thread_current();
+
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+  else {
+    tid_t tmp = TID_ERROR;
+    old_level = intr_disable();
+
+    if (!list_empty(&cur->children)) {
+	tmp = list_entry (list_begin(&cur->children),
+			struct child_process, child_elem)->tid;
+    }
+    intr_set_level(old_level);
+    sema_down(&cur->create_sema);
+
+    old_level = intr_disable();    
+    if (list_empty(&cur->children))
+	tid = TID_ERROR;
+    else {
+    	tid = list_entry (list_begin (&cur->children), 
+		struct child_process, child_elem)->tid;
+    	if (tid == tmp)
+		tid = TID_ERROR;
+    }
+    intr_set_level(old_level);
+  }
   return tid;
 }
 
@@ -62,73 +87,83 @@ start_process (void *file_name_)
 
   char *save_ptr, *token;
   uint32_t potential_len = strlen(file_name) + 1;
-//  char *file_exec = strtok_r(file_name, " ", &save_ptr);
+  /* Extract file execution name. */
   token = strtok_r(file_name, " ", &save_ptr);
-  //TODO
   success = load (token, &if_.eip, &if_.esp);
-
-  /* If load failed, quit. */
-//  palloc_free_page (file_name);
-  if (!success) 
+ 
+  enum intr_level old_level;
+  struct thread *parent;
+  if (!success) { 
+    old_level = intr_disable();
+    if ((parent = thread_current()->parent) != NULL)
+	sema_up(&parent->create_sema);
+    intr_set_level(old_level);
     thread_exit ();
+  }
   else {
-  char **args = (char **) malloc(potential_len * sizeof(char));
-  uint32_t argc = 0;
-  args[argc++] = token;
-  
-  uint32_t stack_args_len = strlen(token) + 1;
+     /* Setup up exec_name for print out exit msg. */
+     struct thread* cur = thread_current(); 
+     cur->exec_name = (char *)malloc(strlen(token) + 1);
+     strlcpy(cur->exec_name, token, strlen(token) + 1);
 
-  for(token = strtok_r(NULL, " ", &save_ptr); token !=NULL; token = strtok_r(NULL, " ", &save_ptr)) {
+     /* Setup arguments on stack. */
+     char **args = (char **) malloc(potential_len * sizeof(char));
+     if (args == NULL)
+	PANIC("Failed to allocate memory for stack arguments.");
+     uint32_t argc = 0;
+     args[argc++] = token;
+  
+     uint32_t stack_args_len = strlen(token) + 1;
+
+     for(token = strtok_r(NULL, " ", &save_ptr); token !=NULL; 
+	token = strtok_r(NULL, " ", &save_ptr)) {
         args[argc++] = token;
         // keep track of length of argv[i] on stack
         stack_args_len += strlen(token) + 1;
-  }
+     }
 
-  int i;
-  // list of addresses of each argument
-  int **token_addr = (int **)malloc(argc * sizeof(int*));
-  int token_len;
-  for (i = argc - 1; i>=0; i--) {
+     int i;
+     // list of addresses of each argument
+     int **token_addr = (int **)malloc(argc * sizeof(int*));
+     if (token_addr == NULL)
+	PANIC("Failed to allocate memory for stack token addresses..");	    
+     int token_len;
+     for (i = argc - 1; i>=0; i--) {
         token_len = strlen(args[i]) + 1;
         if_.esp -= token_len;
         strlcpy(if_.esp, args[i], token_len);
         token_addr[i] = if_.esp;
-  }
-  hex_dump(if_.esp, if_.esp, 64, true);
+     }
 
-  // word align
-  int align = stack_args_len % 4;
-  if (align != 0) {
+     // word align
+     int align = stack_args_len % 4;
+     if (align != 0) {
         if_.esp = if_.esp - (4-align);
-  }
-hex_dump(if_.esp, if_.esp, 64, true);
-  // sentinel
-  if_.esp -= 4;
-  *(int *) if_.esp = 0;
-hex_dump(if_.esp, if_.esp, 64, true);
-  // put addresses of argv[i] on stack
-  for (i = argc - 1; i>=0; i--) {
-        if_.esp -= 4;
-//	strlcpy(if_.esp, 
-        *(void **)if_.esp = token_addr[i];
-  }
-hex_dump(if_.esp, if_.esp, 64, true);
-  // pointer from argv to argv[0]
-  if_.esp -= 4;
-  *(char **)if_.esp = if_.esp + 4;
-hex_dump(if_.esp, if_.esp, 64, true);
-  // put args count
-  if_.esp -= 4;
-  *(int *) if_.esp = argc;
-  if_.esp -= 4;
-  *(int *) if_.esp = 0;
-hex_dump(if_.esp, if_.esp, 64, true);
-  free (token_addr);
-  free (args);
+     }
 
-  hex_dump(if_.esp, if_.esp, 64, true);
+     // sentinel
+     if_.esp -= 4;
+     *(int *) if_.esp = 0;
+     // put addresses of argv[i] on stack
+     for (i = argc - 1; i>=0; i--) {
+        if_.esp -= 4;
+        *(void **)if_.esp = token_addr[i];
+     }
+     // pointer from argv to argv[0]
+     if_.esp -= 4;
+     *(char **)if_.esp = if_.esp + 4;
+     // put args count
+     if_.esp -= 4;
+     *(int *) if_.esp = argc;
+     if_.esp -= 4;
+     *(int *) if_.esp = 0;
+     free (token_addr);
+     free (args);
+
+//  hex_dump(if_.esp, if_.esp, 64, true);
+     setup_process_children();
   }
-palloc_free_page (file_name);
+  palloc_free_page (file_name);
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -137,6 +172,34 @@ palloc_free_page (file_name);
      and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
+}
+
+  /* Add current thread's reference to parent thread. */
+void
+setup_process_children(void)
+{
+  enum intr_level old_level;
+
+  struct thread *cur = thread_current();
+  struct thread *parent;
+  struct child_process *child = 
+     (struct child_process *) malloc(sizeof (struct child_process));
+  if (child ==NULL)
+     PANIC("Failed to allocate memory for child_process.");
+  cur->child_process_elem = child;
+  child->tid = cur->tid;
+  child->status = -1;
+  child->thread = cur;
+  sema_init(&child->wait_sema, 0);
+
+  old_level = intr_disable();
+  if ((parent = cur->parent)!=NULL) {
+     list_push_front(&parent->children, &child->child_elem);
+     sema_up(&parent->create_sema);
+  } else {
+     free (child);
+  }
+  intr_set_level(old_level);
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -151,9 +214,45 @@ palloc_free_page (file_name);
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  while (true ) {
-}
-  return -1;
+  struct thread *cur = thread_current ();
+  struct child_process *child = NULL;
+  int status;
+  
+  enum intr_level old_level;
+  old_level = intr_disable ();
+
+  struct list_elem *e;
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
+    {
+      struct child_process *c = 
+        list_entry (e, struct child_process, child_elem);
+      if (c->tid == child_tid)
+        {
+          child = c;
+          break;
+        }
+    }
+  intr_set_level (old_level);
+
+  if (child == NULL)
+    {
+      status = -1;
+    }
+  else
+    {
+      sema_down (&child->wait_sema);
+      status = child->status;
+
+      old_level = intr_disable ();
+      list_remove (&child->child_elem);
+      intr_set_level (old_level);
+
+      free (child);
+    }
+
+  return status;
+
 }
 
 /* Free the current process's resources. */
@@ -178,6 +277,28 @@ process_exit (void)
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
+    }
+
+  if (cur->exec_name != NULL)
+    {
+	printf ("%s: exit(%d)\n", cur->exec_name, cur->process_status);
+        free (cur->exec_name);
+    }
+
+  if (cur->parent != NULL && cur->child_process_elem != NULL)
+    {
+      cur->child_process_elem->thread = NULL;
+      sema_up(&cur->child_process_elem->wait_sema);
+    }
+  struct list_elem *e;
+  for (e = list_begin(&cur->children); e != list_end(&cur->children);
+	e = list_next(e))
+    {
+	struct child_process *cp = 
+          list_entry (e, struct child_process, child_elem);
+	if (cp->thread != NULL)
+	  cp->thread->parent = NULL;
+	free(cp);
     }
 }
 
