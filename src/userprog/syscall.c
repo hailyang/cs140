@@ -29,7 +29,7 @@ static bool buffer_read(uint8_t *dst, uint8_t *src, int size);
 static bool buffer_write(uint8_t *dst, uint8_t *src, int size);
 static void  cmd_validator(const char *str, int max_len);
 static bool args_validator(struct intr_frame *f, int nr);
-
+static bool args_validator_range(struct intr_frame *f, int beg, int nr);
 /* Reads a byte at user virtual address UADDR.
    UADDR must be below PHYS_BASE.
    Returns the byte value if successful, -1 if a segfault
@@ -91,13 +91,21 @@ buffer_write(uint8_t *dst, uint8_t *src, int size)
 static bool
 args_validator(struct intr_frame *f, int nr)
 {
+  return args_validator_range(f, 0, 0);
+}
+
+static bool
+args_validator_range(struct intr_frame *f, int beg, int nr)
+{
   int i;
   int readin;
-  for (i = 1; i<=nr; i++)
+  bool ret = true;
+  for (i = beg; i<=nr; i++)
   {
      uint32_t uaddr = f->esp + 4*i;
      //printf ("args_validator buffer = 0x%.8x, with nr %d\n", uaddr, nr);
      if (uaddr > (unsigned) PHYS_BASE) {
+        ret = false;
         thread_exit();
      }
      int j;
@@ -105,10 +113,12 @@ args_validator(struct intr_frame *f, int nr)
         {
            readin = get_user((uint8_t *)(uaddr + j));
            if (readin == -1) {
-		thread_exit();
-	   }
+                ret = false;
+                thread_exit();
+           }
         }
   }
+  return ret;
 }
 
 static void
@@ -140,6 +150,7 @@ static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
   //hex_dump(f->esp, f->esp, 512, true);
+  bool ret = args_validator_range(f, 0, 0);
   int syscall_no = sys_arg(int, 0);
   //printf("syscall no is %d\n", syscall_no);
   switch(syscall_no) {
@@ -147,8 +158,11 @@ syscall_handler (struct intr_frame *f UNUSED)
 		sys_halt();
 		break;
 	case SYS_EXIT:
-		args_validator(f, 1);
+		ret = args_validator(f, 1);
+		if (ret)
 		sys_exit(sys_arg(int, 1));
+		else
+		  sys_exit(-1);
 		break;
 	case SYS_EXEC:
 		args_validator(f, 1);
