@@ -7,7 +7,10 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "userprog/process.h"
+#include "filesys/filesys.h"
 
+#define FD_MAX 32767 // Max of int.
+#define END_OF_TEXT 3
 #define sys_arg(TYPE, INDEX) (*((TYPE *)(f->esp +INDEX*4)))
 
 static void syscall_handler (struct intr_frame *);
@@ -27,9 +30,14 @@ static unsigned sys_tell (int fd);
 static void sys_close (int fd);
 static bool buffer_read(uint8_t *dst, uint8_t *src, int size);
 static bool buffer_write(uint8_t *dst, uint8_t *src, int size);
-static void  cmd_validator(const char *str, int max_len);
+static void cmd_validator(const char *str, int max_len);
 static bool args_validator(struct intr_frame *f, int nr);
 static bool args_validator_range(struct intr_frame *f, int beg, int nr);
+static void file_validator(const char *file, int max);
+
+static int get_next_fd(void);
+static struct file* lookup_fd(int fd);
+
 /* Reads a byte at user virtual address UADDR.
    UADDR must be below PHYS_BASE.
    Returns the byte value if successful, -1 if a segfault
@@ -91,7 +99,7 @@ buffer_write(uint8_t *dst, uint8_t *src, int size)
 static bool
 args_validator(struct intr_frame *f, int nr)
 {
-  return args_validator_range(f, 0, 0);
+  return args_validator_range(f, 1, nr);
 }
 
 static bool
@@ -103,8 +111,7 @@ args_validator_range(struct intr_frame *f, int beg, int nr)
   for (i = beg; i<=nr; i++)
   {
      uint32_t uaddr = f->esp + 4*i;
-     //printf ("args_validator buffer = 0x%.8x, with nr %d\n", uaddr, nr);
-     if (uaddr > (unsigned) PHYS_BASE) {
+     if (uaddr >= (unsigned) PHYS_BASE) {
         ret = false;
         thread_exit();
      }
@@ -139,6 +146,52 @@ cmd_validator (const char *str, int max_len)
 	thread_exit ();
 }
 
+static void 
+file_validator(const char *file, int max)
+{
+  int i;
+  int ret;
+  for (i = 0; i < max; file++)
+    {
+	if ((unsigned)file >= (unsigned)PHYS_BASE)
+	   thread_exit();
+	ret = get_user((uint8_t *)file);
+	if (ret == -1)
+	   thread_exit();
+	if (ret == '\0')
+	   return;
+    }
+  thread_exit();
+}
+
+static int
+get_next_fd ()
+{
+  struct thread* cur = thread_current();
+  int fd = cur->next_fd;
+  if (fd == FD_MAX)
+    return -1;
+  else
+    {
+	cur->next_fd++;
+  	return fd;
+    }  
+}
+
+static struct file *
+lookup_fd (int fd)
+{
+  struct thread *cur = thread_current();
+  struct list_elem *e;
+  for (e = list_begin(&cur->open_files); e != list_end(&cur->open_files);
+	e = list_next (e))
+    {
+	struct fd_file *fd_f = list_entry(e, struct fd_file, file_elem);
+	if (fd_f->fd == fd)
+	  return fd_f->file;
+    }
+  return NULL;
+}
 
 void
 syscall_init (void) 
@@ -149,10 +202,8 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
-  //hex_dump(f->esp, f->esp, 512, true);
   bool ret = args_validator_range(f, 0, 0);
   int syscall_no = sys_arg(int, 0);
-  //printf("syscall no is %d\n", syscall_no);
   switch(syscall_no) {
 	case SYS_HALT: 
 		sys_halt();
@@ -160,7 +211,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 	case SYS_EXIT:
 		ret = args_validator(f, 1);
 		if (ret)
-		sys_exit(sys_arg(int, 1));
+		  sys_exit(sys_arg(int, 1));
 		else
 		  sys_exit(-1);
 		break;
@@ -257,72 +308,214 @@ sys_wait (pid_t pid)
 static bool
 sys_create (const char *file, unsigned initial_size)
 {
-	printf ("sys_create: file = %s, initial_size = %d\n", file, initial_size);
+  file_validator(file, PGSIZE);
+  bool success;
+  lock_acquire (&filesys_lock);
+  success = filesys_create (file, initial_size);
+  lock_release (&filesys_lock);
+  return success;
 }
 
 static bool
 sys_remove (const char *file)
 {
-	printf ("sys_remove: file = %s\n", file);
+  file_validator(file, PGSIZE);
+  bool success;
+  lock_acquire (&filesys_lock);
+  success = filesys_remove (file);
+  lock_release (&filesys_lock);
+  return success;
 }
 
 static int
 sys_open (const char *file)
 {
-	printf ("sys_open: file = %s\n", file);
+  file_validator(file, PGSIZE);
+  struct file *file_f;
+  int fd;
+  struct thread *cur = thread_current();
+  lock_acquire (&filesys_lock);
+  file_f = filesys_open (file);
+  fd = get_next_fd();
+  if ((file_f != NULL) && (fd != -1))
+    {
+	struct fd_file *fd_f = 
+		(struct fd_file *) malloc (sizeof (struct fd_file));
+	if (fd_f == NULL)
+	  {
+	     file_close (file_f);
+	     lock_release (&filesys_lock);
+	     return -1;
+	  }
+   	fd_f->fd = fd;
+	fd_f->file = file_f;
+	list_push_front(&cur->open_files, &fd_f->file_elem);
+    }
+  else
+    {
+         file_close (file_f);
+         lock_release (&filesys_lock);
+         return -1;
+    }
+  lock_release (&filesys_lock);
+  return fd;
 }
 
 static int
 sys_filesize (int fd)
 {
-	printf ("sys_filesize: fd = %d\n", fd);
+  struct file *file = lookup_fd (fd);
+  if (file == NULL)
+    return -1;
+  int file_size;
+  lock_acquire (&filesys_lock);
+  file_size = file_length (file);
+  lock_release (&filesys_lock);
+  return file_size;
 }
 
 static int
 sys_read (int fd, void *buffer, unsigned size)
 {
-	printf ("sys_read: fd = %d, buffer = 0x%.8x, size = %d\n", fd, (unsigned) buffer, size);
+  int read_count = 0;
+  struct file *file;
+  uint8_t *readin_buf = NULL;
+  
+  if (size > 0) 
+    {
+	readin_buf = (uint8_t *)malloc (size);
+	if (readin_buf == NULL)
+	   return -1;
+    } 
+  // Read from console
+  if (fd == STDIN_FILENO)
+    {
+	uint8_t in_char;
+	for (read_count = 0; (unsigned) read_count < size; 
+		read_count++)
+   	  {
+	     in_char = input_getc();
+	     if (in_char == (uint8_t) END_OF_TEXT)
+		break;
+	     else
+		readin_buf[read_count] = in_char;
+	  }
+    }
+  else
+    {
+	file = lookup_fd (fd);
+	if (file != NULL)
+	  {
+	     lock_acquire (&filesys_lock);
+	     read_count = file_read (file, readin_buf, size);
+	     lock_release (&filesys_lock);
+	  }
+ 	else
+  	  {
+	     read_count = -1;
+	  }
+    }
+
+  bool write_success = buffer_write (buffer, readin_buf, read_count);
+  if (write_success)
+    {
+	if (readin_buf != NULL)
+	   free (readin_buf);
+	return read_count;
+    }
+  else
+    {
+	if (readin_buf != NULL)
+	   free (readin_buf);
+	thread_exit();
+    }
+
 }
 
 static int
 sys_write (int fd, const void *buffer, unsigned size)
 {
-  uint8_t *readin_buf = (uint8_t *)malloc(size);
-  if (readin_buf == NULL)
-	return -1;
+  struct file *file;
+  int write_count = 0;
+  uint8_t *readin_buf;
+  if (size > 0) 
+    {
+	readin_buf =(uint8_t *)malloc(size);
+	if (readin_buf == NULL)
+	  return -1;
+    }
 
   if (buffer_read(readin_buf, buffer, size) == false)
     {
-	free(readin_buf);
+	if (readin_buf != NULL)
+	   free(readin_buf);
 	thread_exit();
     }
-  else 
+  if (fd == STDOUT_FILENO) 
     {
-	if (fd == 1) 
-   	  {
-	    putbuf(buffer, size);
+	while (size > 128)
+	  {
+	    putbuf(buffer, 128);
+	    size -= 128;
+	    write_count += 128;
+	    buffer += 128;
+    	  }
+	putbuf (buffer, size);
+	write_count += size;
+    }
+  else
+    {
+	file = lookup_fd (fd);
+	if (file != NULL)
+	  {
+	    lock_acquire (&filesys_lock);
+	    write_count = file_write (file, readin_buf, size);
+	    lock_release (&filesys_lock);
 	  }
-	
-	free(readin_buf);
+	else 
+	  write_count = -1;
     }	  
+  
+  if (readin_buf != NULL)
+	free (readin_buf);
+  return write_count;
 }
 
 static void
 sys_seek (int fd, unsigned position)
 {
-	printf ("sys_seek: fd = %d, position = %d\n", fd, position);
+  struct file *file = lookup_fd (fd);
+  if (file != NULL)
+    file_seek (file, position);
+
 }
 
 static unsigned
 sys_tell (int fd)
 {
-	printf ("sys_tell: fd = %d\n", fd);
+  struct file *file = lookup_fd (fd);
+  if (file != NULL)
+    return file_tell (file);
+  return -1;
 }
 
 static void
 sys_close (int fd)
 {
-	printf ("sys_close: fd = %d\n", fd);
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  for (e = list_begin (&cur->open_files); e != list_end (&cur->open_files);
+	 e = list_next (e))
+    {
+	struct fd_file *fd_file = list_entry (e, struct fd_file, file_elem);
+	if (fd_file->fd == fd)
+          {
+	     list_remove (e);
+	     file_close (fd_file->file);
+	     free (fd_file);
+	     break;
+	  }
+//	break;
+    }
 }
-
 

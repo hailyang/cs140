@@ -152,7 +152,7 @@ page_fault (struct intr_frame *f)
   /* Page fault in kernel. */
    if (!user)
     {
-printf ("args_validator buffer = 0x%.8x", fault_addr);
+//printf ("args_validator buffer = 0x%.8x", fault_addr);
       ASSERT ((unsigned)fault_addr < (unsigned)PHYS_BASE);
       f->eip = (void (*) (void)) f->eax;
       f->eax = 0xffffffff;

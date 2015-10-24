@@ -103,6 +103,9 @@ struct thread
     struct child_process *child_process_elem;
     char *exec_name;
     int process_status;
+    struct file* exec_file;
+    struct list open_files;
+    int next_fd;
 #endif
 
     /* Owned by thread.c. */

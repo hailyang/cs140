@@ -278,13 +278,13 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
-
+/*
   if (cur->exec_name != NULL)
     {
 	printf ("%s: exit(%d)\n", cur->exec_name, cur->process_status);
         free (cur->exec_name);
     }
-
+*/
   enum intr_level old_level;
   old_level = intr_disable();
 
@@ -304,6 +304,25 @@ process_exit (void)
 	free(cp);
     }
   intr_set_level(old_level);
+
+  lock_acquire (&filesys_lock);
+  if (cur->exec_file != NULL)
+    file_close (cur->exec_file);
+
+  for (e = list_begin(&cur->open_files); e != list_end(&cur->open_files);)
+    {
+	struct fd_file *f = list_entry(e, struct fd_file, file_elem);
+	file_close(f->file);
+	e = list_next(e);
+	free (f);
+    }
+  lock_release (&filesys_lock);
+
+  if (cur->exec_name != NULL)
+    {
+        printf ("%s: exit(%d)\n", cur->exec_name, cur->process_status);
+        free (cur->exec_name);
+    }
 }
 
 /* Sets up the CPU for running user code in the current
@@ -411,6 +430,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
 
+  lock_acquire (&filesys_lock);
   /* Open executable file. */
   file = filesys_open (file_name);
   if (file == NULL) 
@@ -502,7 +522,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (file != NULL)
+    file_deny_write(file);
+  t->exec_file = file;
+  lock_release(&filesys_lock);
   return success;
 }
 

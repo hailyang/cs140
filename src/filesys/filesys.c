@@ -28,6 +28,10 @@ filesys_init (bool format)
     do_format ();
 
   free_map_open ();
+
+#ifdef USERPROG
+  lock_init(&filesys_lock);
+#endif
 }
 
 /* Shuts down the file system module, writing any unwritten data
