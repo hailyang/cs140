@@ -76,6 +76,7 @@ buffer_read(uint8_t *dst, uint8_t *src, int size)
 	if (readin == -1)
 	  return false;
 	*dst = (uint8_t) readin;
+	dst++;
    }  
   return true;
 }
@@ -437,7 +438,7 @@ sys_write (int fd, const void *buffer, unsigned size)
 {
   struct file *file;
   int write_count = 0;
-  uint8_t *readin_buf;
+  uint8_t *readin_buf = NULL;
   if (size > 0) 
     {
 	readin_buf =(uint8_t *)malloc(size);
