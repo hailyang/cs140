@@ -5,12 +5,20 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "vm/frame.h"
+#include "vm/spage.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
+#include "filesys/directory.h"
+#include "userprog/pagedir.h"
+#include "threads/synch.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
+static bool install_page (void *upage, void *kpage, bool writable);
 
 /* Registers handlers for interrupts that can be caused by user
    programs.
@@ -149,25 +157,109 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* Page fault in kernel. */
-   if (!user)
-    {
-//printf ("args_validator buffer = 0x%.8x", fault_addr);
-      ASSERT ((unsigned)fault_addr < (unsigned)PHYS_BASE);
-      f->eip = (void (*) (void)) f->eax;
-      f->eax = 0xffffffff;
-      return;
-    }
-
-
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
+/*  printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
+*/
+  if (not_present)
+  {
+     /* Check if the fault address is in spage_hash. */
+     struct hash *spage_hash = &thread_current()->spage_hash;
+     struct spage_entry *spte = spage_lookup (spage_hash, pg_round_down (fault_addr));
+     
+     if (spte != NULL)
+     {
+	switch (spte->type)
+  	{
+	   case TYPE_STACK:
+	   case TYPE_LOADED:
+	   case TYPE_LOADED_WRITABLE:
+	     break;
+	   case TYPE_LOADING:
+	   case TYPE_LOADING_WRITABLE:
+	   case TYPE_FILE:
+	     lock_acquire (&filesys_lock);
+	     struct file *file = spte->file;
+	     file_seek (file, spte->ofs);
+	     lock_release (&filesys_lock);
+
+	     struct frame_entry *fte = frame_get_frame_with_pin (true, true); 	     
+	     uint8_t *kpage = fte->paddr;	
+	     if (kpage == NULL)
+	     {
+		printf ("ERROR: no more frame available.\n");
+		kill (f);
+		return;
+	     }
+	     lock_acquire (&filesys_lock);
+	     int bytes_read = file_read (file, kpage, spte->length);
+	     lock_release (&filesys_lock);
+	     if (bytes_read != (int) spte->length)
+	     {
+		printf ("ERROR: file read length is incorrect.\n");
+		frame_free_frame (kpage);
+		kill (f);
+		return;
+	     }
+	     bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
+				(spte->type == TYPE_FILE);
+	     if (!install_page (spte->uaddr, kpage, writable)) 
+	     {
+		printf ("ERROR: failed to install page.\n");
+		frame_free_frame (kpage);
+		kill (f);
+		return;
+	     }
+	     /* Update frame table entry. */
+	     fte->t = thread_current();
+	     fte->spte = spte;
+	     /* Update spage table entry. */
+	     spte->fte = fte;
+	     if (spte->type == TYPE_LOADING)
+		spte->type = TYPE_LOADED;
+	     else if (spte->type == TYPE_LOADING_WRITABLE)
+		spte->type = TYPE_LOADED_WRITABLE;
+	     frame_unpin_frame (kpage);
+	     return;
+	}
+     } 
+     else 
+     {
+	/* Stack growth or invalid access. */
+	if (false)
+	{
+	}
+	else 
+	{
+	   /* Invalid access, kill user, return -1 kernel. */
+	   if (!user)
+	   {
+	      ASSERT ((unsigned int) fault_addr < (unsigned int)PHYS_BASE);
+	      f->eip = (void (*) (void)) f->eax;
+	      f->eax = 0xFFFFFFFF;
+	      return;
+	   }
+	   else 
+	   {
+	      kill (f);
+	      return;
+	   }
+	}
+     }
+  }  
+  /* Rights violation and unhandled cases with not_present. */
   kill (f);
 }
 
+static bool
+install_page (void *upage, void *kpage, bool writable)
+{
+   struct thread *t = thread_current();
+   return (pagedir_get_page (t->pagedir, upage) == NULL &&
+		pagedir_set_page (t->pagedir, upage, kpage, writable));
+}

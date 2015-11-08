@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "threads/thread.h"
+#include "vm/frame.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -86,6 +87,9 @@ start_process (void *file_name_)
   struct thread *parent;
 
   /* Initialize interrupt frame and load executable. */
+#ifdef VM
+  spage_init (&cur->spage_hash);
+#endif  
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
@@ -340,7 +344,9 @@ static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
-
+static bool load_segment_lazy (struct file *file, off_t ofs, uint8_t *upage,
+                          uint32_t read_bytes, uint32_t zero_bytes,
+                          bool writable);
 /* Loads an ELF executable fromn FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
@@ -546,14 +552,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
+      struct frame_entry *fte = frame_get_frame (false);
+      uint8_t *kpage = fte->paddr;
       if (kpage == NULL)
         return false;
 
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
-          palloc_free_page (kpage);
+          frame_free_frame (kpage);
           return false; 
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
@@ -561,7 +568,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       /* Add the page to the process's address space. */
       if (!install_page (upage, kpage, writable)) 
         {
-          palloc_free_page (kpage);
+          frame_free_frame (kpage);
           return false; 
         }
 
@@ -573,150 +580,51 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   return true;
 }
 
+static bool
+load_segment_lazy (struct file *file, off_t ofs, uint8_t *upage,
+		uint32_t read_bytes, uint32_t zero_bytes, bool writable)
+{
+  ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+  ASSERT (pg_ofs (upage) == 0);
+  ASSERT (ofs % PGSIZE == 0);
+
+  while (read_bytes > 0 || zero_bytes > 0)
+  {
+    size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+    size_t page_zero_bytes = PGSIZE - page_read_bytes;
+
+    struct spage_entry *spte = (struct spage_entry *)
+				malloc (sizeof (struct spage_entry));
+    if (spte == NULL)
+      return false;
+
+    spte->uaddr = upage;
+    spte->type = (writable == true)? TYPE_LOADING_WRITABLE : TYPE_LOADING;
+    spte->fte = NULL;
+    spte->swap_sector = 0;
+    spte->file = file;
+    spte->ofs = ofs;
+    spte->length = page_read_bytes;
+
+    struct thread *cur = thread_current();
+    hash_insert (&cur->spage_hash, &spte->elem);
+    ofs += page_read_bytes;
+    read_bytes -= page_read_bytes;
+    zero_bytes -= page_zero_bytes;
+    upage += PGSIZE;
+  }
+  return true;
+}
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
-/*
 static bool
 setup_stack (void **esp, const char* file_name) 
 {
   uint8_t *kpage;
   bool success = false;
-
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL)
-  {
-    // install page to the PHYS_BASE
-    success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-
-    if (success) {
-      char *fn_copy = palloc_get_page(0);
-      if (fn_copy == NULL) {
-        return false;
-      }
-      int argc = 0;
-      int argv_char_cnt = 0;
-      char *argv_bgn, **stack_bgn;
-      
-      char* token, *save_ptr;
-      strlcpy (fn_copy, file_name, PGSIZE);
-      for (token = strtok_r (fn_copy, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr))
-      {
-        argc ++;
-        argv_char_cnt += strlen (token) + 1;
-      }
-      argv_bgn = (char *) (PHYS_BASE - argv_char_cnt);
-      
-      char * wd_al;
-      for (wd_al = argv_bgn - 1; (int) wd_al >= ((int)(argv_bgn) / 4 * 4); wd_al --) {
-        *wd_al = 0;
-      }
-      
-      stack_bgn = (char **) ((unsigned int)(argv_bgn) / 4 * 4) - argc - 4;
-      
-      *esp = (void *) stack_bgn;
-      *((void (**) ()) stack_bgn++) = (void (*) ()) 0;  // return address
-      *((int *) stack_bgn++) = argc; // argc
-      *((char ***) stack_bgn) = stack_bgn + 1; // argv
-      stack_bgn ++;
-      strlcpy (fn_copy, file_name, PGSIZE);
-      for (token = strtok_r (fn_copy, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr))
-      {
-        int argv_length = strlen (token);
-        *stack_bgn++ = argv_bgn;
-        strlcpy (argv_bgn, token, argv_length + 1);
-        argv_bgn += argv_length + 1;
-      }
-      *stack_bgn = (char *) 0;
-      done:
-      palloc_free_page (fn_copy);
-    }
-    else {
-      palloc_free_page (kpage);
-    }
-  }
-  return success;
-}
-*/
-/*
-static bool
-setup_stack (void **esp, const char* file_name) 
-{
-  uint8_t *kpage;
-  bool success = false;
-
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL)
-  {
-    // install page to the PHYS_BASE
-    success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-
-    if (success) {
-      char *save_ptr, *token;
-      
-      char* fn_copy = palloc_get_page (0);
-      strlcpy (fn_copy, file_name, PGSIZE);
-
-      
-      // Extract file execution name.
-      uint32_t stack_args_len = 0;
-      int argc = 0;
-      
-      for(token = strtok_r(file_name_copy, " ", &save_ptr); token !=NULL;
-          token = strtok_r(NULL, " ", &save_ptr)) {
-        argc += 1;
-        // keep track of length of argv[i] on stack
-        stack_args_len += strlen(token) + 1;
-     }
-
-     char *argv_start = (char*) (PHYS_BASE - stack_args_len);
-     // word align
-     int align = stack_args_len % 4;
-     char **stack_start = (char **)((uint32_t)(argv_start) / 4 * 4 ) - argc - 4;
-
-     unsigned int overflow_bound = (unsigned int)(PHYS_BASE - PGSIZE);
-     if (stack_start < overflow_bound) {
-        success = false;
-        goto done;
-     }
-     *esp = (void *) stack_bgn;
-     
-     *((void (**) ()) stack_bgn++) = (void (*) ()) 0;
-     *((int *) stack_bgn++) = argc;
-     *((char ***) stack_bgn++) = stack_bgn + 1;
-     
-     strlcpy (fn_copy, file_name, PGSIZE);
-     for (token = strtok_r (fn_copy, " ", &save_ptr); token != NULL;
-               token = strtok_r (NULL, " ", &save_ptr))
-     {
-      int argv_length = strlen (token);
-      *stack_start++ = argv_bgn;
-      strlcpy (argv_start, token, argv_length + 1);
-      argv_start += argv_length + 1;
-     }
-     *stack_bgn = (char *) 0;
-     printf("esp = %x \n", esp);
-     
-     hex_dump(*esp, *esp, 256, true);
-     
-     free (args);
-     free (token_addr);
-     free (file_name_copy);
-    }
-    else {
-      palloc_free_page (kpage);
-    }
-  }
-  return success;
-}
-*/
-
-static bool
-setup_stack (void **esp, const char* file_name) 
-{
-  uint8_t *kpage;
-  bool success = false;
-
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  
+  struct frame_entry *fte = frame_get_frame (true);
+  kpage = fte->paddr;
   if (kpage != NULL) 
   {
     success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
@@ -773,7 +681,7 @@ setup_stack (void **esp, const char* file_name)
       palloc_free_page (fn_copy);
    	}
     else {
-      palloc_free_page (kpage);
+      frame_free_frame (kpage);
     }
   }
   return success;
