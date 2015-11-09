@@ -441,7 +441,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
-              if (!load_segment (file, file_page, (void *) mem_page,
+              if (!load_segment_lazy (file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
             }
@@ -623,11 +623,36 @@ setup_stack (void **esp, const char* file_name)
   uint8_t *kpage;
   bool success = false;
   
-  struct frame_entry *fte = frame_get_frame (true);
+  struct frame_entry *fte = frame_get_frame_pinned (true);
   kpage = fte->paddr;
+  struct thread *cur = thread_current();
+  fte->t = cur;
+
   if (kpage != NULL) 
   {
     success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+    if (success)
+    {
+      struct spage_entry *spte = (struct spage_entry *)
+				malloc (sizeof (struct spage_entry));
+      if (spte == NULL)
+	success = false;
+      else 
+      {
+	spte->uaddr = ((uint8_t *) PHYS_BASE) - PGSIZE;
+	spte->type = TYPE_STACK;
+	spte->fte = fte;
+	spte->swap_sector = 0;
+	spte->file = NULL;
+	spte->ofs = 0;
+	spte->length = 0;
+	hash_insert (&cur->spage_hash, &spte->elem);
+	fte->spte = spte;
+	success = true;
+	frame_unpin_frame (kpage);
+      }
+    }
+
     if (success) {
       char *fn_copy, *token, *save_ptr;
       int argc = 0, argv_char_cnt = 0;

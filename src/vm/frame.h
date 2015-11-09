@@ -21,7 +21,7 @@ struct frame_entry
 
 void frame_init (void);
 struct frame_entry *frame_get_frame (bool zero);
-struct frame_entry *frame_get_frame_with_pin (bool zero, bool pin);
+struct frame_entry *frame_get_frame_pinned (bool zero);
 void frame_free_frame (void *paddr);
 void frame_unpin_frame (void *paddr);
 

@@ -8,6 +8,13 @@ static bool spage_func_less (const struct hash_elem *a,
 	const struct hash_elem *b, void *aux UNUSED);
 static unsigned spage_func_hash (const struct hash_elem *p, void *aux UNUSED);
 
+void print_spte (struct hash_elem *e, void *aux UNUSED)
+{
+  struct spage_entry *mpte = 
+	hash_entry (e, struct spage_entry, elem);
+      printf ("[mpage] uaddr:%p, type:%d, fte:%p, swap_sector: %u, file:%p, ofs:%u, length:%u\n", mpte->uaddr, mpte->type, mpte->fte, mpte->swap_sector, mpte->file, mpte->ofs, mpte->length);
+}
+
 void
 spage_init (struct hash *spage_hash)
 {

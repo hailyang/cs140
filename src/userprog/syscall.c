@@ -203,6 +203,9 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
+  struct thread *t = thread_current();
+  t->syscall_esp = f->esp;
+
   bool ret = args_validator_range(f, 0, 0);
   int syscall_no = sys_arg(int, 0);
   switch(syscall_no) {

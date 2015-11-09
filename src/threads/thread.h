@@ -98,7 +98,6 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    struct hash spage_hash;
     struct thread *parent;
     struct list children;
     struct semaphore create_sema;
@@ -108,6 +107,12 @@ struct thread
     struct file* exec_file;
     struct list open_files;
     int next_fd;
+#endif
+
+#ifdef VM
+    /*Owned by vm/spage.c. */
+    struct hash spage_hash;
+    void *syscall_esp;
 #endif
 
     /* Owned by thread.c. */

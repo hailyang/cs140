@@ -12,6 +12,9 @@
 #include "filesys/directory.h"
 #include "userprog/pagedir.h"
 #include "threads/synch.h"
+#include "threads/malloc.h"
+
+#define STACK_LIMIT 0x80000
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -160,11 +163,13 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-/*  printf ("Page fault at %p: %s error %s page in %s context.\n",
+/*
+  printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
+  hash_apply (&thread_current()->spage_hash, print_spte);
 */
   if (not_present)
   {
@@ -188,7 +193,7 @@ page_fault (struct intr_frame *f)
 	     file_seek (file, spte->ofs);
 	     lock_release (&filesys_lock);
 
-	     struct frame_entry *fte = frame_get_frame_with_pin (true, true); 	     
+	     struct frame_entry *fte = frame_get_frame_pinned (true); 	     
 	     uint8_t *kpage = fte->paddr;	
 	     if (kpage == NULL)
 	     {
@@ -231,28 +236,57 @@ page_fault (struct intr_frame *f)
      else 
      {
 	/* Stack growth or invalid access. */
-	if (false)
+	struct thread *t = thread_current();
+	void *esp = user ? f->esp : t->syscall_esp;
+	printf ("stack esp:%p, now %s\n", esp, user? "user":"kernel");	
+	if (((((unsigned) esp <= (unsigned) fault_addr)
+		|| (((unsigned) esp - (unsigned) fault_addr) == 4)
+		|| (((unsigned) esp - (unsigned) fault_addr) == 32)))
+		&& ((unsigned) PHYS_BASE >= (unsigned) esp)
+		&& ((unsigned) PHYS_BASE - (unsigned) fault_addr <= STACK_LIMIT))
 	{
-	}
-	else 
-	{
-	   /* Invalid access, kill user, return -1 kernel. */
-	   if (!user)
+	   void *upage = pg_round_down (fault_addr);
+	   printf ("should add a page at vaddr %p\n", upage);
+	   struct frame_entry *fte = frame_get_frame_pinned (true);
+	   fte->t = t;
+	   uint8_t *kpage = fte->paddr;
+	   if (kpage == NULL)
 	   {
-	      ASSERT ((unsigned int) fault_addr < (unsigned int)PHYS_BASE);
-	      f->eip = (void (*) (void)) f->eax;
-	      f->eax = 0xFFFFFFFF;
-	      return;
-	   }
-	   else 
-	   {
+	      printf ("ERROR: no more frame available.\n");
 	      kill (f);
 	      return;
 	   }
-	}
+	   if (!install_page (upage, kpage, true))
+	   {
+	      printf ("ERROR: failed to install page.\n");
+	      frame_free_frame (kpage);
+	      kill (f);
+              return;
+	   }
+	   struct spage_entry *spte = (struct spage_entry *)
+			malloc (sizeof (struct spage_entry));
+	   spte->uaddr = upage;
+	   spte->type = TYPE_STACK;
+	   spte->fte = fte;
+	   spte->swap_sector = 0;
+	   spte->file = NULL;
+	   spte->ofs = 0;
+	   spte->length = 0;
+	   hash_insert (&t->spage_hash, &spte->elem);
+	   fte->spte = spte;
+	   frame_unpin_frame (kpage);
+	   return;
+	} 
      }
   }  
   /* Rights violation and unhandled cases with not_present. */
+  if (!user)
+  {
+     printf ("fault_addr: 0x%.8x\n", (unsigned) fault_addr);
+     f->eip = (void (*) (void)) f->eax;
+     f->eax = 0xFFFFFFFF;
+     return;
+  }
   kill (f);
 }
 

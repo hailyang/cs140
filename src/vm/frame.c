@@ -15,11 +15,6 @@ frame_init (void)
 struct frame_entry *
 frame_get_frame (bool zero)
 {
-  return frame_get_frame_with_pin (zero, false);
-}
-
-struct frame_entry *
-frame_get_frame_with_pin (bool zero, bool pin) {
   void *addr = NULL;
   if (zero)
     addr = palloc_get_page (PAL_USER | PAL_ZERO | PAL_ASSERT);
@@ -32,7 +27,27 @@ frame_get_frame_with_pin (bool zero, bool pin) {
   ASSERT (fe != NULL);
 
   fe->paddr = addr;
-  fe->pinned = pin;
+  fe->pinned = true;
+  fe->spte = NULL;
+  list_push_back (&frame_list, &fe->elem);
+  return fe;
+}
+
+struct frame_entry *
+frame_get_frame_pinned (bool zero) {
+  void *addr = NULL;
+  if (zero)
+    addr = palloc_get_page (PAL_USER | PAL_ZERO | PAL_ASSERT);
+  else
+    addr = palloc_get_page (PAL_USER | PAL_ASSERT);
+
+  struct frame_entry *fe = (struct frame_entry*)
+                        malloc (sizeof (struct frame_entry));
+     // kernel should not run out of memory
+  ASSERT (fe != NULL);
+
+  fe->paddr = addr;
+  fe->pinned = false;
   fe->spte = NULL;
   list_push_back (&frame_list, &fe->elem);
   return fe;

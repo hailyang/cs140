@@ -33,5 +33,6 @@ struct spage_entry
 
 void spage_init (struct hash *spage_hash);
 struct spage_entry *spage_lookup (struct hash *spage_hash, void *uaddr);
+hash_action_func print_spte;
 
 #endif
