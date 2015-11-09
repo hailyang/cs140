@@ -190,6 +190,7 @@ page_fault (struct intr_frame *f)
 	   case TYPE_FILE:
 	     lock_acquire (&filesys_lock);
 	     struct file *file = spte->file;
+	     off_t file_pos = file_tell (file);
 	     file_seek (file, spte->ofs);
 	     lock_release (&filesys_lock);
 
@@ -198,6 +199,9 @@ page_fault (struct intr_frame *f)
 	     if (kpage == NULL)
 	     {
 		printf ("ERROR: no more frame available.\n");
+		lock_acquire (&filesys_lock);
+		file_seek (file, file_pos);
+		lock_release (&filesys_lock);
 		kill (f);
 		return;
 	     }
@@ -208,6 +212,9 @@ page_fault (struct intr_frame *f)
 	     {
 		printf ("ERROR: file read length is incorrect.\n");
 		frame_free_frame (kpage);
+                lock_acquire (&filesys_lock);
+                file_seek (file, file_pos);
+                lock_release (&filesys_lock);
 		kill (f);
 		return;
 	     }
@@ -216,6 +223,9 @@ page_fault (struct intr_frame *f)
 	     if (!install_page (spte->uaddr, kpage, writable)) 
 	     {
 		printf ("ERROR: failed to install page.\n");
+                lock_acquire (&filesys_lock);
+                file_seek (file, file_pos);
+                lock_release (&filesys_lock);
 		frame_free_frame (kpage);
 		kill (f);
 		return;

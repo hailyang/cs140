@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <hash.h>
 #include "threads/synch.h"
+#include "vm/mmap.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -112,6 +113,8 @@ struct thread
 #ifdef VM
     /*Owned by vm/spage.c. */
     struct hash spage_hash;
+    struct list mmap_list;
+    mapid_t next_mid;
     void *syscall_esp;
 #endif
 

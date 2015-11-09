@@ -89,3 +89,17 @@ frame_unpin_frame (void *paddr)
        }
   }
 }
+
+bool 
+frame_check_dirty (void *uaddr, void *paddr)
+{
+  struct thread *t = thread_current();
+  bool u_dirty = pagedir_is_dirty (t->pagedir, uaddr);
+  bool p_dirty = pagedir_is_dirty (t->pagedir, paddr);
+  return u_dirty || p_dirty;
+}
+
+void 
+frame_clean_dirty (void *uaddr, void *paddr) 
+{
+}

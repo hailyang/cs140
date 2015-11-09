@@ -7,7 +7,7 @@
 #include "filesys/file.h"
 #include "filesys/off_t.h"
 #include "devices/block.h"
-
+#include <list.h>
 enum page_type
 {
    TYPE_STACK,
@@ -28,7 +28,7 @@ struct spage_entry
    off_t ofs;
    uint32_t length;
    struct hash_elem elem;
-  
+   struct list_elem list_elem;  
 };
 
 void spage_init (struct hash *spage_hash);

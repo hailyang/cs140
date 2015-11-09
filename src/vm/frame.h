@@ -24,5 +24,7 @@ struct frame_entry *frame_get_frame (bool zero);
 struct frame_entry *frame_get_frame_pinned (bool zero);
 void frame_free_frame (void *paddr);
 void frame_unpin_frame (void *paddr);
+bool frame_check_dirty (void *uaddr, void *paddr);
+void frame_clean_dirty (void *uaddr, void *paddr);
 
 #endif

@@ -89,6 +89,8 @@ start_process (void *file_name_)
   /* Initialize interrupt frame and load executable. */
 #ifdef VM
   spage_init (&cur->spage_hash);
+  list_init (&cur->mmap_list);
+  cur->next_mid = 1;  
 #endif  
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
