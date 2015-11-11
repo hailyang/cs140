@@ -4,6 +4,7 @@
 #include <round.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <hash.h>
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
@@ -20,10 +21,13 @@
 #include "threads/malloc.h"
 #include "threads/thread.h"
 #include "vm/frame.h"
+#include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static char* extract_exec_name (const char* input);
+static hash_action_func free_spte_and_frame_or_swap;
+
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -198,6 +202,17 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  struct list_elem *m_elem;
+  /* Free the mmap. */
+  for (m_elem = list_begin (&cur->mmap_list); m_elem != list_end (&cur->mmap_list);)
+  {
+    struct mmap_entry *me = list_entry (m_elem, struct mmap_entry, elem);
+    m_elem = list_next (m_elem);
+    syscall_munmap (me);
+  }
+  /* Destory supplimentary page table. */
+  hash_destroy (&cur->spage_hash, free_spte_and_frame_or_swap);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -744,3 +759,18 @@ extract_exec_name (const char* file_name) {
   strlcpy (exec_name, file_name, i + 1);
   return exec_name;
 }
+
+void
+free_spte_and_frame_or_swap (struct hash_elem *e, void *aux UNUSED)
+{
+  struct thread *cur = thread_current();
+  struct spage_entry *spte = 
+    hash_entry (e, struct spage_entry, elem);
+  if (frame_exist_and_free (spte))
+    pagedir_clear_page (cur->pagedir, spte->uaddr);
+  else
+  {
+    // case of swap
+  }
+  free (spte);
+} 

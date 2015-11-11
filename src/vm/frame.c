@@ -1,5 +1,6 @@
 #include <list.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "vm/frame.h"
 #include "threads/vaddr.h"
 #include "threads/palloc.h"
@@ -21,6 +22,8 @@ frame_get_frame (bool zero)
   else
     addr = palloc_get_page (PAL_USER | PAL_ASSERT);
 
+  if (addr == NULL)
+    return NULL;
   struct frame_entry *fe = (struct frame_entry*)
                         malloc (sizeof (struct frame_entry));
      // kernel should not run out of memory
@@ -102,4 +105,34 @@ frame_check_dirty (void *uaddr, void *paddr)
 void 
 frame_clean_dirty (void *uaddr, void *paddr) 
 {
+  struct thread *t = thread_current();
+  pagedir_set_dirty (t->pagedir, uaddr);
+  pagedir_set_dirty (t->pagedir, paddr);
+}
+
+bool 
+frame_exist_and_free (struct spage_entry *s)
+{
+  bool exist = false;
+  if (s->fte != NULL)
+  {
+    exist = true;
+    palloc_free_page (s->fte->paddr);
+    list_remove (&(s->fte->elem));
+    free (s->fte);
+    s->fte = NULL;
+  }
+  return exist;
+}
+
+bool 
+frame_exist_and_pin (struct spage_entry *s)
+{
+  bool exist = false;
+  if (s->fte != NULL)
+  {
+    exist = true;
+    s->fte->pinned = true;
+  }
+  return exist;
 }

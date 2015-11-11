@@ -163,6 +163,7 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
+
 /*
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
@@ -176,7 +177,11 @@ page_fault (struct intr_frame *f)
      /* Check if the fault address is in spage_hash. */
      struct hash *spage_hash = &thread_current()->spage_hash;
      struct spage_entry *spte = spage_lookup (spage_hash, pg_round_down (fault_addr));
-     
+     uint8_t *kpage = NULL;
+     struct file *file = NULL;     
+     struct frame_entry *fte = NULL;
+     struct thread *t = thread_current();
+
      if (spte != NULL)
      {
 	switch (spte->type)
@@ -189,22 +194,19 @@ page_fault (struct intr_frame *f)
 	   case TYPE_LOADING_WRITABLE:
 	   case TYPE_FILE:
 	     lock_acquire (&filesys_lock);
-	     struct file *file = spte->file;
-	     off_t file_pos = file_tell (file);
+	     file = spte->file;
 	     file_seek (file, spte->ofs);
 	     lock_release (&filesys_lock);
 
-	     struct frame_entry *fte = frame_get_frame_pinned (true); 	     
-	     uint8_t *kpage = fte->paddr;	
-	     if (kpage == NULL)
+	     fte = frame_get_frame_pinned (true); 	     
+	     if (fte == NULL)
 	     {
 		printf ("ERROR: no more frame available.\n");
-		lock_acquire (&filesys_lock);
-		file_seek (file, file_pos);
-		lock_release (&filesys_lock);
 		kill (f);
 		return;
 	     }
+
+ 	     kpage = fte->paddr;
 	     lock_acquire (&filesys_lock);
 	     int bytes_read = file_read (file, kpage, spte->length);
 	     lock_release (&filesys_lock);
@@ -212,26 +214,24 @@ page_fault (struct intr_frame *f)
 	     {
 		printf ("ERROR: file read length is incorrect.\n");
 		frame_free_frame (kpage);
-                lock_acquire (&filesys_lock);
-                file_seek (file, file_pos);
-                lock_release (&filesys_lock);
 		kill (f);
 		return;
 	     }
-	     bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
-				(spte->type == TYPE_FILE);
+	   //  bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
+//				(spte->type == TYPE_FILE);
+             break;
+	  }
+bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
+                                (spte->type == TYPE_FILE);
 	     if (!install_page (spte->uaddr, kpage, writable)) 
 	     {
 		printf ("ERROR: failed to install page.\n");
-                lock_acquire (&filesys_lock);
-                file_seek (file, file_pos);
-                lock_release (&filesys_lock);
 		frame_free_frame (kpage);
 		kill (f);
 		return;
 	     }
 	     /* Update frame table entry. */
-	     fte->t = thread_current();
+	     fte->t = t;
 	     fte->spte = spte;
 	     /* Update spage table entry. */
 	     spte->fte = fte;
@@ -239,16 +239,14 @@ page_fault (struct intr_frame *f)
 		spte->type = TYPE_LOADED;
 	     else if (spte->type == TYPE_LOADING_WRITABLE)
 		spte->type = TYPE_LOADED_WRITABLE;
+	     frame_clean_dirty (spte->uaddr, kpage);
 	     frame_unpin_frame (kpage);
 	     return;
-	}
      } 
      else 
      {
 	/* Stack growth or invalid access. */
-	struct thread *t = thread_current();
 	void *esp = user ? f->esp : t->syscall_esp;
-	printf ("stack esp:%p, now %s\n", esp, user? "user":"kernel");	
 	if (((((unsigned) esp <= (unsigned) fault_addr)
 		|| (((unsigned) esp - (unsigned) fault_addr) == 4)
 		|| (((unsigned) esp - (unsigned) fault_addr) == 32)))
@@ -256,7 +254,6 @@ page_fault (struct intr_frame *f)
 		&& ((unsigned) PHYS_BASE - (unsigned) fault_addr <= STACK_LIMIT))
 	{
 	   void *upage = pg_round_down (fault_addr);
-	   printf ("should add a page at vaddr %p\n", upage);
 	   struct frame_entry *fte = frame_get_frame_pinned (true);
 	   fte->t = t;
 	   uint8_t *kpage = fte->paddr;
@@ -292,7 +289,7 @@ page_fault (struct intr_frame *f)
   /* Rights violation and unhandled cases with not_present. */
   if (!user)
   {
-     printf ("fault_addr: 0x%.8x\n", (unsigned) fault_addr);
+ //    printf ("fault_addr: 0x%.8x\n", (unsigned) fault_addr);
      f->eip = (void (*) (void)) f->eax;
      f->eax = 0xFFFFFFFF;
      return;

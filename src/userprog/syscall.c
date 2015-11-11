@@ -554,10 +554,14 @@ sys_close (int fd)
 static mapid_t
 sys_mmap (int fd, void *addr)
 {
-  printf ("sys_mmap, fd: %d, addr: %p\n", fd, addr);
   struct file *file = lookup_fd (fd);
   if (fd == 0 || fd == 1 || pg_ofs (addr) != 0 || addr == 0 || file == NULL)
     return MAP_FAILED;
+
+  lock_acquire (&filesys_lock);
+  file = file_reopen (file);
+  lock_release (&filesys_lock);
+
   lock_acquire (&filesys_lock);
   off_t read_bytes = file_length (file);
   lock_release (&filesys_lock);
@@ -565,7 +569,12 @@ sys_mmap (int fd, void *addr)
   uint32_t range_end = (uint32_t) addr + (uint32_t) read_bytes;
   range_end = (uint32_t) pg_round_up ((void *) range_end);
   if (range_end >= (uint32_t) PHYS_BASE)
+  {
+    lock_acquire (&filesys_lock);
+    file_close (file);
+    lock_release (&filesys_lock);
     return MAP_FAILED;
+  }
 
   struct thread *t = thread_current();
   struct hash_iterator i;
@@ -576,14 +585,22 @@ sys_mmap (int fd, void *addr)
 			elem);
     if (((uint32_t) spte->uaddr < range_end) &&
 	(uint32_t) (spte->uaddr + PGSIZE) > (uint32_t)addr)
+    {
+      lock_acquire (&filesys_lock);
+      file_close (file);
+      lock_release (&filesys_lock);
       return MAP_FAILED;
+    }
   }
  
   struct mmap_entry *me = (struct mmap_entry *) malloc (sizeof (struct mmap_entry));
   me->file = file;
   me->mid = get_next_mid ();
-  if (me->mid == -1)
+  if (me->mid == MAP_FAILED)
   {
+    lock_acquire (&filesys_lock);
+    file_close (file);
+    lock_release (&filesys_lock);
     free (me);
     return MAP_FAILED;
   }
@@ -607,6 +624,9 @@ sys_mmap (int fd, void *addr)
 	 free (s);
        }
        free (me); 
+       lock_acquire (&filesys_lock);
+       file_close (file);
+       lock_release (&filesys_lock);
        return MAP_FAILED;
     }
     spte->uaddr = addr;
@@ -649,11 +669,9 @@ sys_munmap (mapid_t mid)
 	{
 	  //lock file, reopen, write to it, unlock
 	  lock_acquire (&filesys_lock);
-	  off_t file_pos = file_tell (spte->file);
 	  file_write_at (spte->file, spte->uaddr, spte->length, spte->ofs);
-	  file_seek (spte->file, file_pos);
+	  lock_release (&filesys_lock);
 	}
-	frame_clean_dirty (spte->uaddr, fte->paddr);
 	frame_free_frame (fte->paddr);
 	pagedir_clear_page (t->pagedir, spte->uaddr);
     }
@@ -664,6 +682,7 @@ sys_munmap (mapid_t mid)
     free (spte);
   }
   list_remove (&me->elem);
+  file_close (me->file);
   free (me);
 }
 
@@ -679,4 +698,39 @@ lookup_mid (mapid_t mid)
 	return me;
   }
   return NULL;
+}
+
+void 
+syscall_munmap (struct mmap_entry *me)
+{
+  struct thread *t = thread_current();
+
+  struct list_elem *e;
+  for (e = list_begin(&me->spte_list); e != list_end(&me->spte_list); )
+  {
+    struct spage_entry *spte = list_entry (e, struct spage_entry, list_elem);
+    if (spte->fte != NULL)
+    {
+        // check to write back
+        struct frame_entry *fte = spte->fte;
+        fte->pinned = true;
+        if (frame_check_dirty (spte->uaddr, fte->paddr))
+        {
+          //lock file, reopen, write to it, unlock
+          lock_acquire (&filesys_lock);
+          file_write_at (spte->file, spte->uaddr, spte->length, spte->ofs);
+          lock_release (&filesys_lock);
+        }
+        frame_free_frame (fte->paddr);
+        pagedir_clear_page (t->pagedir, spte->uaddr);
+    }
+    e = list_next (e);
+    // free spte
+    list_remove (&spte->list_elem);
+    hash_delete (&t->spage_hash, &spte->elem);
+    free (spte);
+  }
+  list_remove (&me->elem);
+  file_close (me->file);
+  free (me);
 }

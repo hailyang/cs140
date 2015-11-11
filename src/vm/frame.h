@@ -27,4 +27,6 @@ void frame_unpin_frame (void *paddr);
 bool frame_check_dirty (void *uaddr, void *paddr);
 void frame_clean_dirty (void *uaddr, void *paddr);
 
+bool frame_exist_and_free (struct spage_entry *spte);
+bool frame_exist_and_pin (struct spage_entry *spte);
 #endif
