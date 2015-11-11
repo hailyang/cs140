@@ -771,6 +771,17 @@ free_spte_and_frame_or_swap (struct hash_elem *e, void *aux UNUSED)
   else
   {
     // case of swap
+    switch (spte->type)
+    {
+      case TYPE_STACK:
+      case TYPE_LOADED_WRITABLE:
+	lock_aquire (&swap_lock);
+	swap_reset_slot (spte->swap_sector);
+	lock_release (&swap_lock);
+	break;
+      default:
+	break;
+    }
   }
   free (spte);
 } 

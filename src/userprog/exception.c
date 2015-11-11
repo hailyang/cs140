@@ -181,14 +181,30 @@ page_fault (struct intr_frame *f)
      struct file *file = NULL;     
      struct frame_entry *fte = NULL;
      struct thread *t = thread_current();
+     bool writable = false;
 
      if (spte != NULL)
      {
+	fte = frame_get_frame_pinned (true);
+        if (fte == NULL)
+	{
+	  printf ("ERROR: fte == NULL, no more frame.\n");
+	  kill (f);
+	  return;
+	}
+	kpage = fte->paddr;
+
 	switch (spte->type)
   	{
 	   case TYPE_STACK:
-	   case TYPE_LOADED:
 	   case TYPE_LOADED_WRITABLE:
+	     lock_acquire (&swap_lock);
+	     swap_read_slot (spte->swap_sector, kpage);
+	     lock_release (&swap_lock);
+	     writable = true;
+	     break;
+	   case TYPE_ZERO:
+	     writable = true;
 	     break;
 	   case TYPE_LOADING:
 	   case TYPE_LOADING_WRITABLE:
@@ -196,20 +212,9 @@ page_fault (struct intr_frame *f)
 	     lock_acquire (&filesys_lock);
 	     file = spte->file;
 	     file_seek (file, spte->ofs);
-	     lock_release (&filesys_lock);
-
-	     fte = frame_get_frame_pinned (true); 	     
-	     if (fte == NULL)
-	     {
-		printf ("ERROR: no more frame available.\n");
-		kill (f);
-		return;
-	     }
-
- 	     kpage = fte->paddr;
-	     lock_acquire (&filesys_lock);
 	     int bytes_read = file_read (file, kpage, spte->length);
 	     lock_release (&filesys_lock);
+	     
 	     if (bytes_read != (int) spte->length)
 	     {
 		printf ("ERROR: file read length is incorrect.\n");
@@ -217,31 +222,26 @@ page_fault (struct intr_frame *f)
 		kill (f);
 		return;
 	     }
-	   //  bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
-//				(spte->type == TYPE_FILE);
+	     writable = (spte->type == TYPE_LOADING_WRITABLE) ||
+                                (spte->type == TYPE_FILE);
              break;
 	  }
-bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
-                                (spte->type == TYPE_FILE);
-	     if (!install_page (spte->uaddr, kpage, writable)) 
+
+	  if (!install_page (spte->uaddr, kpage, writable)) 
 	     {
 		printf ("ERROR: failed to install page.\n");
 		frame_free_frame (kpage);
 		kill (f);
 		return;
 	     }
-	     /* Update frame table entry. */
-	     fte->t = t;
-	     fte->spte = spte;
-	     /* Update spage table entry. */
-	     spte->fte = fte;
-	     if (spte->type == TYPE_LOADING)
-		spte->type = TYPE_LOADED;
-	     else if (spte->type == TYPE_LOADING_WRITABLE)
-		spte->type = TYPE_LOADED_WRITABLE;
-	     frame_clean_dirty (spte->uaddr, kpage);
-	     frame_unpin_frame (kpage);
-	     return;
+	   /* Update frame table entry. */
+	   fte->t = t;
+	   fte->spte = spte;
+	   /* Update spage table entry. */
+	   spte->fte = fte;
+	   frame_clean_dirty (spte->uaddr, kpage);
+	   frame_unpin_frame (kpage);
+	   return;
      } 
      else 
      {
@@ -273,7 +273,7 @@ bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
 	   struct spage_entry *spte = (struct spage_entry *)
 			malloc (sizeof (struct spage_entry));
 	   spte->uaddr = upage;
-	   spte->type = TYPE_STACK;
+	   spte->type = TYPE_ZERO;
 	   spte->fte = fte;
 	   spte->swap_sector = 0;
 	   spte->file = NULL;
@@ -281,7 +281,30 @@ bool writable = (spte->type == TYPE_LOADING_WRITABLE) ||
 	   spte->length = 0;
 	   hash_insert (&t->spage_hash, &spte->elem);
 	   fte->spte = spte;
+	   frame_clean_dirty (upage, kpage);
 	   frame_unpin_frame (kpage);
+
+	   /* Form upage to PHYS_BASE, continuous stack. */
+	   upage = (void *)((unsigned) upage + PGSIZE);
+	   struct spage_entry = query_spte;
+	   while ((unsigned) upage < (unsigned) PHYS_BASE)
+	   {
+	     query_spte->uaddr = upage;
+	     if (hash_find (&t->spage_hash, &(query_spte->elem)) == NULL)
+	     {
+	       struct spage_entry *stack_spte = (struct spage_entry *)
+			malloc (sizeof (struct spage_entry));
+	       stack_spte->uaddr = upage;
+	       stack_spte->type = TYPE_ZERO;
+	       stack_spte->fte = NULL;
+	       stack_spte->swap_sector = 0;
+	       stack_spte->file = NULL;
+	       stack_spte->ofs = 0;
+	       stack_spte->length = 0;
+	       hash_insert (&t->spage_hash, &stack_spte->elem);
+	     }
+	     upage = (void *)((unsigned) upage + PGSIZE);
+	   }
 	   return;
 	} 
      }
