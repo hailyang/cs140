@@ -16,8 +16,9 @@ void print_spte (struct hash_elem *e, void *aux UNUSED)
 }
 
 void
-spage_init (struct hash *spage_hash)
+spage_init (struct hash *spage_hash, struct lock *lock)
 {
+  lock_init (lock);
   hash_init (spage_hash, spage_func_hash, spage_func_less, NULL);
 }
 

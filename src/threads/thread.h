@@ -116,6 +116,7 @@ struct thread
     struct list mmap_list;
     mapid_t next_mid;
     void *syscall_esp;
+    struct lock spt_lock;		/* Lock for supplimentary page table. */
 #endif
 
     /* Owned by thread.c. */

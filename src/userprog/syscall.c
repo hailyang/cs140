@@ -579,6 +579,7 @@ sys_mmap (int fd, void *addr)
   struct thread *t = thread_current();
   struct hash_iterator i;
   hash_first (&i, &t->spage_hash);
+  lock_acquire (&t->spt_lock);
   while (hash_next(&i))
   {
     struct spage_entry *spte = hash_entry (hash_cur (&i), struct spage_entry, 
@@ -589,10 +590,11 @@ sys_mmap (int fd, void *addr)
       lock_acquire (&filesys_lock);
       file_close (file);
       lock_release (&filesys_lock);
+      lock_release (&t->spt_lock);
       return MAP_FAILED;
     }
   }
- 
+  lock_release (&t->spt_lock);
   struct mmap_entry *me = (struct mmap_entry *) malloc (sizeof (struct mmap_entry));
   me->file = file;
   me->mid = get_next_mid ();
@@ -657,6 +659,7 @@ sys_munmap (mapid_t mid)
   struct thread *t = thread_current();
 
   struct list_elem *e;
+  lock_acquire (&t->spt_lock);
   for (e = list_begin(&me->spte_list); e != list_end(&me->spte_list); )
   {
     struct spage_entry *spte = list_entry (e, struct spage_entry, list_elem);
@@ -681,6 +684,7 @@ sys_munmap (mapid_t mid)
     hash_delete (&t->spage_hash, &spte->elem);
     free (spte);
   }
+  lock_release (&t->spt_lock);
   list_remove (&me->elem);
   file_close (me->file);
   free (me);
@@ -706,6 +710,7 @@ syscall_munmap (struct mmap_entry *me)
   struct thread *t = thread_current();
 
   struct list_elem *e;
+  lock_acquire (&t->spt_lock);
   for (e = list_begin(&me->spte_list); e != list_end(&me->spte_list); )
   {
     struct spage_entry *spte = list_entry (e, struct spage_entry, list_elem);
@@ -730,6 +735,7 @@ syscall_munmap (struct mmap_entry *me)
     hash_delete (&t->spage_hash, &spte->elem);
     free (spte);
   }
+  lock_release (&t->spt_lock);
   list_remove (&me->elem);
   file_close (me->file);
   free (me);

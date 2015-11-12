@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <hash.h>
 #include <string.h>
+#include "vm/swap.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -27,6 +28,7 @@ static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static char* extract_exec_name (const char* input);
 static hash_action_func free_spte_and_frame_or_swap;
+static void free_spte_and_frame_or_swap (struct hash_elem *e, void *aux UNUSED);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -92,7 +94,7 @@ start_process (void *file_name_)
 
   /* Initialize interrupt frame and load executable. */
 #ifdef VM
-  spage_init (&cur->spage_hash);
+  spage_init (&cur->spage_hash, &cur->spt_lock);
   list_init (&cur->mmap_list);
   cur->next_mid = 1;  
 #endif  
@@ -212,7 +214,9 @@ process_exit (void)
     syscall_munmap (me);
   }
   /* Destory supplimentary page table. */
+  lock_acquire (&cur->spt_lock);
   hash_destroy (&cur->spage_hash, free_spte_and_frame_or_swap);
+  lock_release (&cur->spt_lock);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -615,6 +619,8 @@ load_segment_lazy (struct file *file, off_t ofs, uint8_t *upage,
     if (spte == NULL)
       return false;
 
+    struct thread *cur = thread_current();
+    lock_acquire (&cur->spt_lock);
     spte->uaddr = upage;
     spte->type = (writable == true)? TYPE_LOADING_WRITABLE : TYPE_LOADING;
     spte->fte = NULL;
@@ -622,9 +628,9 @@ load_segment_lazy (struct file *file, off_t ofs, uint8_t *upage,
     spte->file = file;
     spte->ofs = ofs;
     spte->length = page_read_bytes;
-
-    struct thread *cur = thread_current();
+   
     hash_insert (&cur->spage_hash, &spte->elem);
+    lock_release (&cur->spt_lock);
     ofs += page_read_bytes;
     read_bytes -= page_read_bytes;
     zero_bytes -= page_zero_bytes;
@@ -656,6 +662,7 @@ setup_stack (void **esp, const char* file_name)
 	success = false;
       else 
       {
+        lock_acquire (&cur->spt_lock);
 	spte->uaddr = ((uint8_t *) PHYS_BASE) - PGSIZE;
 	spte->type = TYPE_STACK;
 	spte->fte = fte;
@@ -665,6 +672,7 @@ setup_stack (void **esp, const char* file_name)
 	spte->length = 0;
 	hash_insert (&cur->spage_hash, &spte->elem);
 	fte->spte = spte;
+	lock_release (&cur->spt_lock);
 	success = true;
 	frame_unpin_frame (kpage);
       }
@@ -760,7 +768,7 @@ extract_exec_name (const char* file_name) {
   return exec_name;
 }
 
-void
+static void
 free_spte_and_frame_or_swap (struct hash_elem *e, void *aux UNUSED)
 {
   struct thread *cur = thread_current();
@@ -775,7 +783,7 @@ free_spte_and_frame_or_swap (struct hash_elem *e, void *aux UNUSED)
     {
       case TYPE_STACK:
       case TYPE_LOADED_WRITABLE:
-	lock_aquire (&swap_lock);
+	lock_acquire (&swap_lock);
 	swap_reset_slot (spte->swap_sector);
 	lock_release (&swap_lock);
 	break;

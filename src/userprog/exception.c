@@ -13,7 +13,7 @@
 #include "userprog/pagedir.h"
 #include "threads/synch.h"
 #include "threads/malloc.h"
-
+#include "vm/swap.h"
 #define STACK_LIMIT 0x80000
 
 /* Number of page faults processed. */
@@ -175,12 +175,14 @@ page_fault (struct intr_frame *f)
   if (not_present)
   {
      /* Check if the fault address is in spage_hash. */
-     struct hash *spage_hash = &thread_current()->spage_hash;
+     struct thread *t = thread_current();
+     struct hash *spage_hash = &t->spage_hash;
+     lock_acquire (&t->spt_lock);
      struct spage_entry *spte = spage_lookup (spage_hash, pg_round_down (fault_addr));
+     lock_release (&t->spt_lock);
      uint8_t *kpage = NULL;
      struct file *file = NULL;     
      struct frame_entry *fte = NULL;
-     struct thread *t = thread_current();
      bool writable = false;
 
      if (spte != NULL)
@@ -193,13 +195,18 @@ page_fault (struct intr_frame *f)
 	  return;
 	}
 	kpage = fte->paddr;
-
+	
+//	lock_acquire (&t->spt_lock);
 	switch (spte->type)
   	{
 	   case TYPE_STACK:
 	   case TYPE_LOADED_WRITABLE:
-	     lock_acquire (&swap_lock);
+	     lock_acquire (&swap_disk_lock);
 	     swap_read_slot (spte->swap_sector, kpage);
+	     lock_release (&swap_disk_lock);
+
+	     lock_acquire (&swap_lock);
+	     swap_reset_slot (spte->swap_sector);
 	     lock_release (&swap_lock);
 	     writable = true;
 	     break;
@@ -286,11 +293,11 @@ page_fault (struct intr_frame *f)
 
 	   /* Form upage to PHYS_BASE, continuous stack. */
 	   upage = (void *)((unsigned) upage + PGSIZE);
-	   struct spage_entry = query_spte;
+	   struct spage_entry query_spte;
 	   while ((unsigned) upage < (unsigned) PHYS_BASE)
 	   {
-	     query_spte->uaddr = upage;
-	     if (hash_find (&t->spage_hash, &(query_spte->elem)) == NULL)
+	     query_spte.uaddr = upage;
+	     if (hash_find (&t->spage_hash, &(query_spte.elem)) == NULL)
 	     {
 	       struct spage_entry *stack_spte = (struct spage_entry *)
 			malloc (sizeof (struct spage_entry));
