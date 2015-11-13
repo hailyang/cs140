@@ -204,7 +204,6 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
-
   struct list_elem *m_elem;
   /* Free the mmap. */
   for (m_elem = list_begin (&cur->mmap_list); m_elem != list_end (&cur->mmap_list);)
@@ -217,7 +216,6 @@ process_exit (void)
   lock_acquire (&cur->spt_lock);
   hash_destroy (&cur->spage_hash, free_spte_and_frame_or_swap);
   lock_release (&cur->spt_lock);
-
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;

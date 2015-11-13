@@ -321,6 +321,7 @@ sys_exit(int status)
 	  {
 		cur->child_process_elem->status = status;
 	  }
+	intr_set_level (old_level);
 	thread_exit();
 }
 
@@ -714,11 +715,11 @@ syscall_munmap (struct mmap_entry *me)
   for (e = list_begin(&me->spte_list); e != list_end(&me->spte_list); )
   {
     struct spage_entry *spte = list_entry (e, struct spage_entry, list_elem);
-    if (spte->fte != NULL)
+    e = list_next (e);
+    if (frame_exist_and_pin(spte))
     {
         // check to write back
         struct frame_entry *fte = spte->fte;
-        fte->pinned = true;
         if (frame_check_dirty (spte->uaddr, fte->paddr))
         {
           //lock file, reopen, write to it, unlock
@@ -729,10 +730,9 @@ syscall_munmap (struct mmap_entry *me)
         frame_free_frame (fte->paddr);
         pagedir_clear_page (t->pagedir, spte->uaddr);
     }
-    e = list_next (e);
     // free spte
-    list_remove (&spte->list_elem);
     hash_delete (&t->spage_hash, &spte->elem);
+    list_remove (&spte->list_elem);
     free (spte);
   }
   lock_release (&t->spt_lock);
