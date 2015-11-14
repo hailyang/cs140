@@ -4,6 +4,7 @@
 #include "threads/vaddr.h"
 #include "threads/synch.h"
 #include <stdio.h>
+#include <stdbool.h>
 #define SCALE (PGSIZE / BLOCK_SECTOR_SIZE)
 
 static struct bitmap *swap_bitmap;
@@ -15,11 +16,17 @@ swap_init (void)
 {
   lock_init (&swap_lock);
   lock_init (&swap_disk_lock);
+
   swap_block = block_get_role (BLOCK_SWAP);
+printf("swap block get\n");
+  if (swap_block == NULL)
+    PANIC ("No swap device found. cannot initialize file system\n");
   block_sector_t size = block_size (swap_block);
   swap_bitmap = bitmap_create (size / SCALE);
+  printf ("right bitmap size is %d, block sector size is %d, SCALE is %d\n", size/SCALE, size, SCALE);
   printf ("bitmap size %d\n", bitmap_size (swap_bitmap));
   bitmap_set (swap_bitmap, 0, true);
+  printf ("bit set\n");
 }
 
 size_t 

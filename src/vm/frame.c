@@ -1,5 +1,4 @@
 #include "vm/frame.h"
-
 #include <list.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,296 +16,292 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 
-static bool frame_thread_check_dirty 
-    (struct thread *t, void *uaddr, void *paddr);
-static bool frame_thread_check_access 
-    (struct thread *t, void *uaddr, void *paddr);
-static void frame_thread_clean_access 
-    (struct thread *t, void *uaddr, void *paddr);
+static bool frame_thread_check_dirty (struct thread *t, void *uaddr, void *paddr);
+static bool frame_thread_check_access (struct thread *t, void *uaddr, void *paddr);
+static void frame_thread_clean_access (struct thread *t, void *uaddr, void *paddr);
 
 static struct list_elem *clock_hand;
 static struct lock frame_lock;
 
 void
 frame_init (void)
-	{
-		list_init (&frame_list);
-		lock_init (&frame_lock);
-    clock_hand = list_begin (&frame_list);
-	}
+{
+  list_init (&frame_list);
+  lock_init (&frame_lock);
+  clock_hand = list_begin (&frame_list);
+}
 
 struct frame_entry *
 frame_get_frame_pinned (bool zero)
-	{ 
-    void *addr = NULL;
-		if (zero)
-			addr = palloc_get_page (PAL_USER | PAL_ZERO);
-		else
-			addr = palloc_get_page (PAL_USER);
+{ 
+  void *addr = NULL;
+  if (zero)
+    addr = palloc_get_page (PAL_USER | PAL_ZERO);
+  else
+    addr = palloc_get_page (PAL_USER);
 		
-    if (addr == NULL)
+  if (addr == NULL)
+  { 
+    lock_acquire (&frame_lock);
+    struct frame_entry *fte = NULL;
+    if (clock_hand == list_end (&frame_list))
+    {
+      clock_hand = list_begin (&frame_list);
+    }
+    struct list_elem *start = clock_hand;
+    unsigned pinned_count = 0;
+
+    while (true)
+    { 
+      struct frame_entry *f = 
+           list_entry (clock_hand, struct frame_entry, elem); 
+      if (clock_hand == start)
+      {
+        if (pinned_count == list_size (&frame_list))
+        // all frames are pinned 
+          break;
+        else
+          pinned_count = 0;
+      }
+
+      if (f->pinned)
       { 
-        lock_acquire (&frame_lock);
-        struct frame_entry *fte = NULL;
+        pinned_count ++;
+        clock_hand = list_next (clock_hand);
         if (clock_hand == list_end (&frame_list))
-          {
-            clock_hand = list_begin (&frame_list);
-          }
+        {
+          clock_hand = list_begin (&frame_list);
+        }
+        continue;
+      }
 
-        struct list_elem *start = clock_hand;
-        unsigned pinned_count = 0;
-
-        while (true)
-          { 
-            struct frame_entry *f = 
-                    list_entry (clock_hand, struct frame_entry, elem); 
-            if (clock_hand == start)
-              {
-                if (pinned_count == list_size (&frame_list))
-                  /* all frames are pinned */
-                  break;
-                else
-                  pinned_count = 0;
-              }
-
-            if (f->pinned)
-              { 
-                pinned_count ++;
-                clock_hand = list_next (clock_hand);
-                if (clock_hand == list_end (&frame_list))
-                  {
-                    clock_hand = list_begin (&frame_list);
-                  }
-                continue;
-              }
-
-            bool access = 
+      bool access = 
                 frame_thread_check_access (f->t, f->spte->uaddr, f->paddr);
-            frame_thread_clean_access (f->t, f->spte->uaddr, f->paddr);
+      frame_thread_clean_access (f->t, f->spte->uaddr, f->paddr);
             
-            if (access)
-              { 
-                clock_hand = list_next (clock_hand);
-                if (clock_hand == list_end (&frame_list))
-                  {
-                    clock_hand = list_begin (&frame_list);
-                  }
-                continue;
-              }
-            else 
-              { 
-                clock_hand = list_next (clock_hand);
-                if (clock_hand == list_end (&frame_list))
-                  {
-                    clock_hand = list_begin (&frame_list);
-                  }
-                fte = f;
-                break;
-              }
-          }
+      if (access)
+      { 
+        clock_hand = list_next (clock_hand);
+        if (clock_hand == list_end (&frame_list))
+        {
+          clock_hand = list_begin (&frame_list);
+        }
+      continue;
+      }
+      else 
+      { 
+        clock_hand = list_next (clock_hand);
+        if (clock_hand == list_end (&frame_list))
+        {
+          clock_hand = list_begin (&frame_list);
+        }
+        fte = f;
+        break;
+      }
+    }
+    if (fte == NULL)
+    {
+      /* when all frames are pinned */
+      lock_release (&frame_lock);
+      PANIC ("There is no available frame exists, everything is pinned.\n");
+      return NULL;
+    }
 
-        if (fte == NULL)
-          {
-            /* when all frames are pinned */
-            lock_release (&frame_lock);
-            return NULL;
-          }
-
-        fte->pinned = true;
-        struct spage_entry *spte = fte->spte; 
+    fte->pinned = true;
+    struct spage_entry *spte = fte->spte; 
         
-        lock_acquire(&fte->t->spt_lock);
-        
-        pagedir_clear_page (fte->t->pagedir, spte->uaddr);
-        bool dirty = 
+    lock_acquire(&fte->t->spt_lock);
+      
+    pagedir_clear_page (fte->t->pagedir, spte->uaddr);
+    bool dirty = 
             frame_thread_check_dirty (fte->t, fte->spte->uaddr, fte->paddr);
 
-        if (((spte->type == TYPE_LOADING_WRITABLE) && (!dirty))
+    if (((spte->type == TYPE_LOADING_WRITABLE) && (!dirty))
             || ((spte->type == TYPE_ZERO) && (!dirty))
             || ((spte->type == TYPE_FILE) && (!dirty))
             || ((spte->type == TYPE_LOADING)) )
-          {
-            spte->fte = NULL;
-            lock_release (&frame_lock); 
-            lock_release(&fte->t->spt_lock);
-          } 
-        else if (((spte->type == TYPE_LOADING_WRITABLE) && (dirty)) 
-                 || ((spte->type == TYPE_ZERO) && (dirty))
-                 || (spte->type == TYPE_STACK)
-                 || (spte->type == TYPE_LOADED_WRITABLE) )
-          { 
-            lock_acquire (&swap_lock);
-            size_t slot = swap_find_free_slot ();
-            ASSERT (slot != SIZE_MAX);
-            lock_release (&swap_lock);
-            spte->fte = NULL;
-            spte->swap_sector = slot;
-            switch (spte->type)
-              {
-                case TYPE_LOADING_WRITABLE:
-                  spte->type = TYPE_LOADED_WRITABLE;
-                  break;
-                case TYPE_ZERO:
+    {
+      spte->fte = NULL;
+      lock_release (&frame_lock); 
+      lock_release(&fte->t->spt_lock);
+    } 
+    else if (((spte->type == TYPE_LOADING_WRITABLE) && (dirty)) 
+            || ((spte->type == TYPE_ZERO) && (dirty))
+            || (spte->type == TYPE_STACK)
+            || (spte->type == TYPE_LOADED_WRITABLE) )
+    { 
+      lock_acquire (&swap_lock);
+      size_t slot = swap_find_free_slot ();
+      ASSERT (slot != SIZE_MAX);
+      lock_release (&swap_lock);
+      spte->fte = NULL;
+      spte->swap_sector = slot;
+      switch (spte->type)
+      {
+        case TYPE_LOADING_WRITABLE:
+      	    	spte->type = TYPE_LOADED_WRITABLE;
+		break;
+        case TYPE_ZERO:
                   spte->type = TYPE_STACK;
                   break;
-                default:
+        default:
                   break;
-              }
-
-            lock_acquire (&swap_disk_lock);
-            lock_release (&frame_lock); 
-            lock_release(&fte->t->spt_lock);
-            /* release lock before swap disk operation */
-            swap_write_slot (slot, fte->paddr);
-            lock_release (&swap_disk_lock); 
-          }
-        else if ((spte->type == TYPE_FILE) && (dirty)) 
-          {
-            spte->fte = NULL;
-            lock_acquire (&filesys_lock);
-            lock_release (&frame_lock); 
-            lock_release(&fte->t->spt_lock);
-            /* release lock before file operation */
-            file_write_at (spte->file, spte->uaddr, spte->length, spte->ofs);
-            lock_release (&filesys_lock);
-          }
-        if (zero)
-          {
-             memset (fte->paddr, 0, PGSIZE);
-          }
-        fte->spte = NULL;
-        return fte;
       }
-    /* addr != NULL */
-		struct frame_entry *fte = 
-            (struct frame_entry *) malloc (sizeof (struct frame_entry));
-		ASSERT (fte != NULL); 
-		fte->paddr = addr;
-		fte->pinned = true;
-		fte->spte = NULL;
-    //fte->t = thread_current();
-    lock_acquire (&frame_lock);
-    list_insert (list_end (&frame_list), &fte->elem);
-    lock_release (&frame_lock);
-		return fte;
+
+      lock_acquire (&swap_disk_lock);
+      lock_release (&frame_lock); 
+      lock_release(&fte->t->spt_lock);
+      /* release lock before swap disk operation */
+      swap_write_slot (slot, fte->paddr);
+      lock_release (&swap_disk_lock); 
+    }
+    else if ((spte->type == TYPE_FILE) && (dirty)) 
+    {
+      spte->fte = NULL;
+      lock_acquire (&filesys_lock);
+      lock_release (&frame_lock); 
+      lock_release(&fte->t->spt_lock);
+      /* release lock before file operation */
+      file_write_at (spte->file, spte->uaddr, spte->length, spte->ofs);
+      lock_release (&filesys_lock);
+    }
+    if (zero)
+    {
+      memset (fte->paddr, 0, PGSIZE);
+    }
+    fte->spte = NULL;
+      return fte;
+  }
+  /* addr != NULL */
+  struct frame_entry *fte = 
+        (struct frame_entry *) malloc (sizeof (struct frame_entry));
+  ASSERT (fte != NULL); 
+  fte->paddr = addr;
+  fte->pinned = true;
+  fte->spte = NULL;
+  //fte->t = thread_current();
+  lock_acquire (&frame_lock);
+  list_insert (list_end (&frame_list), &fte->elem);
+  lock_release (&frame_lock);
+  return fte;
 }
 
 void
 frame_free_frame (void *paddr)
-	{
-    lock_acquire (&frame_lock);
-		struct list_elem *e;
-		ASSERT (pg_ofs (paddr) == 0);
-		for (e = list_begin (&frame_list); e != list_end (&frame_list);
-				 e = list_next (e))
-			{
-				struct frame_entry *fte = 
-										list_entry (e, struct frame_entry, elem);
-				if (fte->paddr == paddr)
-					{
-						palloc_free_page (paddr);
-            if (clock_hand == e)
-              {
-                clock_hand = list_next (e);
-              }
-						list_remove (e);
-            if (clock_hand == list_end (&frame_list))
-              {
-                clock_hand = list_begin (&frame_list);
-              }
-						free (fte);
-						break;
-					}
-			}
-    lock_release (&frame_lock);
-	}
+{
+  lock_acquire (&frame_lock);
+  struct list_elem *e;
+  ASSERT (pg_ofs (paddr) == 0);
+  for (e = list_begin (&frame_list); e != list_end (&frame_list);
+	 e = list_next (e))
+  {
+    struct frame_entry *fte = 
+	list_entry (e, struct frame_entry, elem);
+    if (fte->paddr == paddr)
+    {
+      palloc_free_page (paddr);
+      if (clock_hand == e)
+      {
+        clock_hand = list_next (e);
+      }
+      list_remove (e);
+      if (clock_hand == list_end (&frame_list))
+      {
+        clock_hand = list_begin (&frame_list);
+      }
+      free (fte);
+      break;
+    }
+  }
+  lock_release (&frame_lock);
+}
 
 
 void
 frame_unpin_frame (void *paddr)
-	{
-    lock_acquire (&frame_lock);
-		struct list_elem *e;
-		ASSERT (pg_ofs (paddr) == 0);
-		for (e = list_begin (&frame_list); e != list_end (&frame_list);
-				 e = list_next (e))
-			{
-				struct frame_entry *fte = 
-										list_entry (e, struct frame_entry, elem);
-				if (fte->paddr == paddr)
-					{
-						fte->pinned = false;
-					}
-			}
-    lock_release (&frame_lock);
-	}
+{
+  lock_acquire (&frame_lock);
+  struct list_elem *e;
+  ASSERT (pg_ofs (paddr) == 0);
+  for (e = list_begin (&frame_list); e != list_end (&frame_list);
+	 e = list_next (e))
+  {
+    struct frame_entry *fte = 
+	list_entry (e, struct frame_entry, elem);
+    if (fte->paddr == paddr)
+    {
+      fte->pinned = false;
+    }
+  }
+  lock_release (&frame_lock);
+}
 
 bool
 frame_exist_and_pin (struct spage_entry *spte)
-	{
-    lock_acquire (&frame_lock);
-		if (spte->fte != NULL)
-			{
-				spte->fte->pinned = true;
-        lock_release (&frame_lock);
-				return true;
-			}
+{
+  lock_acquire (&frame_lock);
+  if (spte->fte != NULL)
+  {
+    spte->fte->pinned = true;
     lock_release (&frame_lock);
-		return false;
-	}
+    return true;
+  }
+  lock_release (&frame_lock);
+  return false;
+}
 
 bool 
 frame_exist_and_free (struct spage_entry *spte)
-	{
-    lock_acquire (&frame_lock);
-		bool exist = false;
-		if (spte->fte != NULL)
-			{
-				exist = true;
-				palloc_free_page (spte->fte->paddr);
-				list_remove (&(spte->fte->elem));
-				free (spte->fte);
-				spte->fte = NULL;
-			}
-    lock_release (&frame_lock);
-		return exist;
-	}
+{
+  lock_acquire (&frame_lock);
+  bool exist = false;
+  if (spte->fte != NULL)
+  {
+    exist = true;
+    palloc_free_page (spte->fte->paddr);
+    list_remove (&(spte->fte->elem));
+    free (spte->fte);
+    spte->fte = NULL;
+  }
+  lock_release (&frame_lock);
+  return exist;
+}
 
 bool
 frame_check_dirty (void *uaddr, void *paddr)
-  {
-    struct thread *cur = thread_current ();
-    return frame_thread_check_dirty (cur, uaddr, paddr);
-  }
+{
+  struct thread *cur = thread_current ();
+  return frame_thread_check_dirty (cur, uaddr, paddr);
+}
 
 void
 frame_clean_dirty (void *uaddr, void *paddr)
-  {
-    struct thread *cur = thread_current ();
-    pagedir_set_dirty (cur->pagedir, uaddr, false);
-    pagedir_set_dirty (cur->pagedir, paddr, false);
-  }
+{
+  struct thread *cur = thread_current ();
+  pagedir_set_dirty (cur->pagedir, uaddr, false);
+  pagedir_set_dirty (cur->pagedir, paddr, false);
+}
 
 static bool
 frame_thread_check_dirty (struct thread *t, void *uaddr, void *paddr)
-  {
-    bool u_dirty = pagedir_is_dirty (t->pagedir, uaddr);
-    bool p_dirty = pagedir_is_dirty (t->pagedir, paddr);
-    return u_dirty || p_dirty;
-  }
+{
+  bool u_dirty = pagedir_is_dirty (t->pagedir, uaddr);
+  bool p_dirty = pagedir_is_dirty (t->pagedir, paddr);
+  return u_dirty || p_dirty;
+}
 
 static bool
 frame_thread_check_access (struct thread *t, void *uaddr, void *paddr)
-  {
-    bool u_access = pagedir_is_accessed (t->pagedir, uaddr);
-    bool p_access = pagedir_is_accessed (t->pagedir, paddr);
-    return u_access || p_access;
-  }
+{
+  bool u_access = pagedir_is_accessed (t->pagedir, uaddr);
+  bool p_access = pagedir_is_accessed (t->pagedir, paddr); 
+  return u_access || p_access;
+}
 
 static void
 frame_thread_clean_access (struct thread *t, void *uaddr, void *paddr)
-  {
-    pagedir_set_accessed (t->pagedir, uaddr, false);
-    pagedir_set_accessed (t->pagedir, paddr, false);
+{
+  pagedir_set_accessed (t->pagedir, uaddr, false);
+  pagedir_set_accessed (t->pagedir, paddr, false);
 
-  }
+}
