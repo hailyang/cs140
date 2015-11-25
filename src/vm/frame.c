@@ -59,7 +59,7 @@ frame_get_frame_pinned (bool zero)
       {
         if (pinned_count == list_size (&frame_list))
         // all frames are pinned 
-          break;
+          PANIC ("All frames are pinned.\n");
         else
           pinned_count = 0;
       }
